@@ -43,3 +43,8 @@
         includeDefaultRoots: false
         watch: true
         customSkillDirs: !!js "(() => { const fs = process.getBuiltinModule('node:fs'); const p = process.getBuiltinModule('node:path'); const u = process.getBuiltinModule('node:url'); const m = process.getBuiltinModule('node:module'); const beside = p.join(u.fileURLToPath(baseUrl), 'skills'); if (fs.existsSync(beside)) return [beside]; const pkg = m.createRequire(baseUrl).resolve('dsh-gxworks/package.json'); return [p.join(p.dirname(pkg), 'skills')]; })()"
+
+    # 本包自己的 Host 模块（index.mjs）：不接管上面两行，只做安装完整性检查。
+    # id 与包名一致，patch 覆盖时按它定位。
+    - id: dsh-gxworks
+      name: 'dsh-gxworks'

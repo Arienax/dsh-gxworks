@@ -11,17 +11,19 @@
   },
   "icon": "icon.svg",
   "type": "module",
-  "private": true,
+  "main": "./index.mjs",
   "engines": {
     "node": ">=22.12.0",
     "dsh": ">=0.2.0-0 <0.3.0"
   },
   "exports": {
+    ".": "./index.mjs",
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
   "files": [
+    "index.mjs",
     "cordis.patch.yml",
     "launch/mcp-launch.mjs",
     "skills/**/*.md",

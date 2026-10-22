@@ -59,7 +59,15 @@ node launch/mcp-launch.mjs --print-plan      # 核对解析结果
 `GXWorks-Agent-MCP.exe` 或 `scripts\mcp_entry.py`，否则直接拒绝。也可以用环境变量
 `GXWORKS_AGENT_ROOT` 代替，或把工作目录放在安装目录之内。
 
-然后在 Harness 的会话里用插件管理器安装本目录（绝对路径）：
+然后在 Harness 里装这个包（未发布 npm 时用源码安装形式，`--profile` 换成你自己在用的 profile）：
+
+```powershell
+dsh plugin --profile web add github:Arienax/dsh-gxworks
+```
+
+发布到 npm 之后，等价命令是 `dsh plugin --profile web add dsh-gxworks`。
+
+也可以在本机源码检出目录里用插件管理器按绝对路径链装：
 
 ```
 plugin_manager(action: install_bundle, target: "D:\\dsh-gxworks")
