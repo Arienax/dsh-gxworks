@@ -45,17 +45,30 @@ dsh-gxworks/
 
 ## 安装
 
-在 Harness 的会话里用插件管理器安装本目录（绝对路径）：
+先在命令行里登记本机安装根。Harness 的工作目录通常在自身源码或其他工程里，不一定紧邻 GXWorks Agent，
+所以这一步是一次性、跨会话生效的：
+
+```powershell
+node launch/mcp-launch.mjs --set-root D:\gxworks-agent
+node launch/mcp-launch.mjs --print-plan      # 核对解析结果
+```
+
+它把路径写入 `%USERPROFILE%\.dsh\dsh-gxworks\settings.json`；目录里必须存在
+`GXWorks-Agent-MCP.exe` 或 `scripts\mcp_entry.py`，否则直接拒绝。也可以用环境变量
+`GXWORKS_AGENT_ROOT` 代替，或把工作目录放在安装目录之内。
+
+然后在 Harness 的会话里用插件管理器安装本目录（绝对路径）：
 
 ```
 plugin_manager(action: install_bundle, target: "D:\\dsh-gxworks")
 ```
 
 或者手动把本包加入 profile：在 profile 的 `package.json` 里把它登记到 `dsh.profile.bundles`，
-让 `cordis.patch.yml` 进入层栈。安装后确认两件事：
+让 `cordis.patch.yml` 进入层栈。安装后确认三件事：
 
-1. 工具列表出现 `mcp__gxworks__*`；
-2. 技能目录出现 `gxworks-mcp-router`。
+1. 插件列表里 `gxworks-mcp` 与 `gxworks-skills` 两行都是 active；
+2. 工具列表出现 `mcp__gxworks__*`，例如 `mcp__gxworks__list_projects`；
+3. 技能目录出现 `gxworks-mcp-router`。
 
 安装失败时先看 Harness 日志里 `dsh-gxworks` / `mcp-client(gxworks)` 的输出，再按下文排错。
 
@@ -65,11 +78,16 @@ plugin_manager(action: install_bundle, target: "D:\\dsh-gxworks")
 
 | 变量 | 含义 |
 | --- | --- |
-| `GXWORKS_AGENT_ROOT` | GXWorks Agent 安装根；不设时从 Harness 工作目录向上查找 |
-| `GXWORKS_MCP_EXE` | 直接指定 `GXWorks-Agent-MCP.exe`，优先于安装根 |
+| `GXWORKS_AGENT_ROOT` | GXWorks Agent 安装根，优先于已记住的路径 |
+| `GXWORKS_AGENT_HOME` | 同上，兼容旧名 |
+| `GXWORKS_MCP_EXE` | 直接指定 `GXWorks-Agent-MCP.exe`，跳过安装根解析 |
 | `GXWORKS_MCP_WORKSPACE_DIR` | `local` 模式的工程工作区；不设时用 GXWorks Agent 的默认 MCP 工作区 |
 | `GXWORKS_AGENT_SERVICE_URL` | `service` 模式的本地 Web 源，默认 `http://127.0.0.1:8765` |
 | `PLC_WEB_AGENT_TOKEN` | `service` 模式的 Agent 令牌（通常由 GXWorks Agent 写入 Credential Manager） |
+
+安装根的完整解析顺序：`--agent-root` → `GXWORKS_AGENT_ROOT` / `GXWORKS_AGENT_HOME` →
+`%USERPROFILE%\.dsh\dsh-gxworks\settings.json` → 工作目录及其上级 → `PATH` 上的
+`GXWorks-Agent-MCP.exe`。`--print-plan` 会打印最终命令与 `agentRootSource`。
 
 除环境变量外，其余参数直接写进 `cordis.patch.yml` 的 `args`。`args` 是一个表达式返回的数组，
 在数组里追加参数即可，例如连接已启动的 Web 工作台：
@@ -89,6 +107,9 @@ plugin_manager(action: install_bundle, target: "D:\\dsh-gxworks")
 | `--state-dir <dir>` | 独立运行时的状态目录（必须在工作区之外） |
 | `--approval-mode ask\|auto\|full` | 操作者显式给出的外部操作许可；`full` 还需 `--confirm-full-access` |
 
+此外还有本插件自己的三个参数，只在命令行上使用，不会传给 MCP 服务：
+`--set-root <dir>`（记住安装根）、`--agent-root <dir>`（本次使用指定安装根）、`--print-plan`（只打印解析结果）。
+
 `toolCallTimeoutMs` 在 patch 里设为 10 分钟，因为原生编译、冷重开和波形采样都会超过默认的 60 秒；
 连接中断由 `reconnect` 自动重试，`failOnStartupError: false` 保证本机没装三菱软件时 Harness 仍能启动。
 
@@ -105,7 +126,8 @@ plugin_manager(action: install_bundle, target: "D:\\dsh-gxworks")
 ## 验证与排错
 
 ```powershell
-# 看启动器为当前机器解析出的命令
+# 登记安装根，并看启动器为当前机器解析出的命令
+node launch/mcp-launch.mjs --set-root D:\gxworks-agent
 node launch/mcp-launch.mjs --print-plan
 
 # 在 GXWorks Agent 目录里验证 Python 侧运行时
@@ -114,7 +136,7 @@ node launch/mcp-launch.mjs --print-plan
 
 | 现象 | 处理 |
 | --- | --- |
-| 日志提示“未找到本机 GXWorks Agent 安装目录” | 设置 `GXWORKS_AGENT_ROOT`，或让 Harness 工作目录位于安装目录之内 |
+| 日志提示“未找到本机 GXWorks Agent 安装目录” | 运行 `--set-root`，或设置 `GXWORKS_AGENT_ROOT` |
 | 日志提示 Python 运行时不可用 | 在安装目录创建 `.venv` 并 `pip install -r requirements/mcp.txt`，或改用独立发布包 |
 | 日志提示 `serverName "gxworks" is already in use` | profile 里还有另一个 `mcp-client` 行用了同名 `serverName`，改成唯一名字 |
 | 工具调用超时 | 原生编译等慢操作调大 `toolCallTimeoutMs`；写入状态不明时先用 `get_operation_status` 核对 |

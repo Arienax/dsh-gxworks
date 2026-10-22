@@ -9,6 +9,7 @@
     "node": ">=22.12.0"
   },
   "exports": {
+    "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },

@@ -46,25 +46,44 @@ dsh-gxworks/
 
 ## Install
 
-Install this directory through the plugin manager in a Harness session:
+First record the local installation root once. The Harness working directory is usually inside the
+Harness checkout or another project, not next to GXWorks Agent, so this step is what makes discovery work
+across sessions:
+
+```powershell
+node launch/mcp-launch.mjs --set-root D:\gxworks-agent
+node launch/mcp-launch.mjs --print-plan      # confirm the resolved command
+```
+
+The root is written to `%USERPROFILE%\.dsh\dsh-gxworks\settings.json`, and the directory must contain
+either `GXWorks-Agent-MCP.exe` or `scripts\mcp_entry.py`. Setting `GXWORKS_AGENT_ROOT`, or working inside
+the installation, achieves the same thing.
+
+Then install this directory through the plugin manager in a Harness session:
 
 ```
 plugin_manager(action: install_bundle, target: "D:\\dsh-gxworks")
 ```
 
 Or register the package in the profile's `dsh.profile.bundles` so its `cordis.patch.yml` joins the layer
-stack. After installation, confirm that `mcp__gxworks__*` tools are listed and that `gxworks-mcp-router`
-appears in the skill catalog.
+stack. After installation, confirm that the `gxworks-mcp` and `gxworks-skills` rows are active, that
+`mcp__gxworks__*` tools are listed (for example `mcp__gxworks__list_projects`), and that
+`gxworks-mcp-router` appears in the skill catalog.
 
 ## Configuration
 
 | Variable | Meaning |
 | --- | --- |
-| `GXWORKS_AGENT_ROOT` | Installation root; when unset, the launcher walks up from the Harness working directory |
-| `GXWORKS_MCP_EXE` | Direct path to `GXWorks-Agent-MCP.exe`, preferred over the root |
+| `GXWORKS_AGENT_ROOT` | Installation root, preferred over the remembered path |
+| `GXWORKS_AGENT_HOME` | Same, legacy name |
+| `GXWORKS_MCP_EXE` | Direct path to `GXWorks-Agent-MCP.exe`, bypassing root resolution |
 | `GXWORKS_MCP_WORKSPACE_DIR` | Engineering workspace for `local` mode |
 | `GXWORKS_AGENT_SERVICE_URL` | Local Web origin for `service` mode, default `http://127.0.0.1:8765` |
 | `PLC_WEB_AGENT_TOKEN` | Agent token for `service` mode (normally published to Credential Manager) |
+
+Root resolution order: `--agent-root`, then `GXWORKS_AGENT_ROOT` / `GXWORKS_AGENT_HOME`, then the
+remembered `settings.json`, then the working directory and its parents, then `GXWorks-Agent-MCP.exe` on
+`PATH`. `--print-plan` reports the final command together with `agentRootSource`.
 
 Otherswise, append arguments to the `args` array expression in `cordis.patch.yml`. Common ones:
 
@@ -76,6 +95,9 @@ Otherswise, append arguments to the `args` array expression in `cordis.patch.yml
 | `--project <id>` / `--version <id>` | Pin the selected project and version |
 | `--state-dir <dir>` | State directory for the independent runtime (must live outside the workspace) |
 | `--approval-mode ask\|auto\|full` | Operator-granted consent for external actions; `full` also requires `--confirm-full-access` |
+
+Three launcher-only flags, never forwarded to the server: `--set-root <dir>`, `--agent-root <dir>`, and
+`--print-plan`.
 
 `toolCallTimeoutMs` is ten minutes because native compilation, cold reopen, and waveform sampling exceed
 the 60-second default. `failOnStartupError: false` keeps the Harness bootable on machines without the
@@ -95,14 +117,15 @@ not prove runtime behaviour, and a saved version in `local` mode does not mean a
 ## Verify and troubleshoot
 
 ```powershell
+node launch/mcp-launch.mjs --set-root D:\gxworks-agent
 node launch/mcp-launch.mjs --print-plan
 .venv\Scripts\python.exe scripts\mcp_entry.py --local --check   # in the GXWorks Agent directory
 ```
 
-Typical failures: an unresolved installation root (set `GXWORKS_AGENT_ROOT`), a missing Python runtime
-(create `.venv` and `pip install -r requirements/mcp.txt`), a duplicate `serverName: gxworks` row in the
-profile, tool-call timeouts on slow native operations, or a missing `skills/gxworks-mcp-router/SKILL.md`
-under the installed package.
+Typical failures: an unresolved installation root (run `--set-root` or set `GXWORKS_AGENT_ROOT`), a
+missing Python runtime (create `.venv` and `pip install -r requirements/mcp.txt`), a duplicate
+`serverName: gxworks` row in the profile, tool-call timeouts on slow native operations, or a missing
+`skills/gxworks-mcp-router/SKILL.md` under the installed package.
 
 ## Uninstall
 
