@@ -1,0 +1,5 @@
+# 插件市场来源列表：每行一个 npm 包名或 https Git 仓库 URL。
+# 改动后重新生成：pnpm --filter @deepseek-ai/dsh-plugin-market-generator start \
+#   --input D:\dsh-gxworks\market\plugins.txt --output D:\dsh-gxworks\docs\index.json \
+#   --title "GXWorks Agent Plugins"
+https://github.com/Arienax/dsh-gxworks

@@ -151,6 +151,32 @@ plugin_manager(action: remove_bundle, target: "dsh-gxworks")
 或从 profile 的 `dsh.profile.bundles` 移除本包。卸载只影响 Harness 侧的连接与技能，
 不改动 GXWorks Agent 的工程、状态目录或 GX Works2 安装。
 
+## 插件市场
+
+本仓库同时是一份自建插件市场索引，托管在 GitHub Pages：
+
+```
+https://arienax.github.io/dsh-gxworks/index.json
+```
+
+在 Harness 里打开「插件」页 → 实验性插件里开启 **Custom plugin markets** → 在「发现」的**索引源**里加上这个
+URL，就能看到并安装 `dsh-gxworks`。索引只描述本仓库，安装仍走 `plugin_manager` 并需要你确认；条目里的版本
+固定到具体 Git 提交，DSH 兼容性由 `engines.dsh` 声明（当前 `>=0.2.0-0 <0.3.0`）。
+
+索引是生成物：`market/plugins.txt` 是来源列表，`docs/index.json` 由 DSH 自带的生成器写出并已通过其校验器。
+
+```powershell
+cd D:\dsh\deepseek-harness
+pnpm --filter @deepseek-ai/dsh-plugin-market-generator start `
+  --input D:\dsh-gxworks\market\plugins.txt `
+  --output D:\dsh-gxworks\docs\index.json `
+  --title "GXWorks Agent Plugins" `
+  --description "GXWorks Agent 的 MCP 服务与 PLC 任务路由技能，供 DeepSeek Harness 使用。"
+```
+
+发版顺序是：改 `package.json` 的 `version` → 提交并推送 → 重新生成索引 → 提交 `docs/index.json`。
+生成器只读已推送的提交，未推送的改动不会进入索引。
+
 ## 开发
 
 ```powershell

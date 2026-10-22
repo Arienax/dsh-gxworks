@@ -136,6 +136,34 @@ plugin_manager(action: remove_bundle, target: "dsh-gxworks")
 Uninstalling only removes the Harness-side connection and skill; GXWorks Agent projects, state
 directories, and the GX Works2 installation are untouched.
 
+## Plugin market
+
+This repository also serves a self-hosted plugin market index through GitHub Pages:
+
+```
+https://arienax.github.io/dsh-gxworks/index.json
+```
+
+In the Harness, open **Plugins**, switch on **Custom plugin markets** under the experimental plugins, then add
+that URL as an index source in **Discover** to find and install `dsh-gxworks`. The index only describes this
+repository, installation still goes through `plugin_manager` with your confirmation, and every version pins
+an exact Git commit; DSH compatibility comes from `engines.dsh` (`>=0.2.0-0 <0.3.0` today).
+
+The index is generated: `market/plugins.txt` lists the sources and `docs/index.json` is written by the
+generator that ships with DSH and checked by its validator.
+
+```powershell
+cd D:\dsh\deepseek-harness
+pnpm --filter @deepseek-ai/dsh-plugin-market-generator start `
+  --input D:\dsh-gxworks\market\plugins.txt `
+  --output D:\dsh-gxworks\docs\index.json `
+  --title "GXWorks Agent Plugins" `
+  --description "GXWorks Agent MCP server and PLC task-routing skill for DeepSeek Harness."
+```
+
+The release order is: bump `version` in `package.json`, commit and push, regenerate the index, then commit
+`docs/index.json`. The generator reads pushed commits only.
+
 ## Development
 
 ```powershell

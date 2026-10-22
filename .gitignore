@@ -3,3 +3,4 @@ npm-debug.log*
 *.tgz
 .DS_Store
 Thumbs.db
+market/.plugin-market-cache/
