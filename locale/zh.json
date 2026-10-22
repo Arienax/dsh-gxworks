@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "GXWorks Agent（MCP + Skill）",
+    "description": "连接本机 GXWorks Agent MCP 服务，并带上三菱 PLC 工程任务路由技能，让 Agent 能读取、生成、离线编辑、原生编译与仿真观察 GX Works2 工程。"
+  }
+}

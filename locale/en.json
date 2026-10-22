@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "GXWorks Agent (MCP + Skill)",
+    "description": "Connects the local GXWorks Agent MCP server and ships its Mitsubishi PLC task-routing skill, so the agent can read, generate, edit offline, natively compile, and simulate GX Works2 projects."
+  }
+}

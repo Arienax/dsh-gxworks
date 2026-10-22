@@ -1,0 +1,43 @@
+# ============================================================================
+# dsh-gxworks —— 把 GXWorks Agent 的 MCP 服务与路由 Skill 挂进 DeepSeek Harness
+# ----------------------------------------------------------------------------
+# 这一层 patch 只做两件事：
+#   1. 用 @deepseek-ai/dsh-mcp-client 以 stdio 方式启动本机 GXWorks Agent MCP，
+#      工具在会话里呈现为 mcp__gxworks__<原始工具名>。
+#   2. 用 @deepseek-ai/dsh-skill-filesystem 注册一个只扫描本包 skills/ 的
+#      独立技能源（providerName: gxworks），把 gxworks-mcp-router 技能带进目录。
+#
+# 启动参数由 launch/mcp-launch.mjs 解析：它找到本机 GXWorks Agent 安装根，
+# 选出 .exe / 虚拟环境 Python，并按需补上 --local。安装根可用
+# GXWORKS_AGENT_ROOT 覆盖，工作区可用 GXWORKS_MCP_WORKSPACE_DIR 覆盖。
+# 需要连接已启动的 Web 工作台时，在下面的 args 里加 '--service'。
+#
+# 两个 baseUrl 表达式都先按“本 patch 所在目录”解析，再退回按包名解析，
+# 因此工作区链接安装与 profile 安装都能找到同一份 launch/ 与 skills/。
+# ============================================================================
+
+- insert:
+    - id: gxworks-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: gxworks
+        transport: stdio
+        command: !!js process.execPath
+        args: !!js "(() => { const fs = process.getBuiltinModule('node:fs'); const p = process.getBuiltinModule('node:path'); const u = process.getBuiltinModule('node:url'); const m = process.getBuiltinModule('node:module'); const beside = p.join(u.fileURLToPath(baseUrl), 'launch', 'mcp-launch.mjs'); if (fs.existsSync(beside)) return [beside]; const pkg = m.createRequire(baseUrl).resolve('dsh-gxworks/package.json'); return [p.join(p.dirname(pkg), 'launch', 'mcp-launch.mjs')]; })()"
+        # 原生编译、冷重开与仿真采样都可能超过默认 60 秒。
+        toolCallTimeoutMs: 600000
+        # 本机未安装 GX Works2 / GXWorks Agent 时不让整个 Harness 起不来，
+        # 失败原因写在 Harness 日志里。
+        failOnStartupError: false
+        reconnect:
+          enabled: true
+          maxAttempts: 3
+
+    - id: gxworks-skills
+      name: '@deepseek-ai/dsh-skill-filesystem'
+      config:
+        providerName: gxworks
+        # 只提供本包自带的技能，不重复扫描工程与用户技能目录。
+        includeDefaultRoots: false
+        watch: true
+        customSkillDirs: !!js "(() => { const fs = process.getBuiltinModule('node:fs'); const p = process.getBuiltinModule('node:path'); const u = process.getBuiltinModule('node:url'); const m = process.getBuiltinModule('node:module'); const beside = p.join(u.fileURLToPath(baseUrl), 'skills'); if (fs.existsSync(beside)) return [beside]; const pkg = m.createRequire(baseUrl).resolve('dsh-gxworks/package.json'); return [p.join(p.dirname(pkg), 'skills')]; })()"

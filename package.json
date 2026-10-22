@@ -1,0 +1,46 @@
+{
+  "name": "dsh-gxworks",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness bundle: connects the GXWorks Agent MCP server and ships its PLC task-routing skill.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "exports": {
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "cordis.patch.yml",
+    "launch/mcp-launch.mjs",
+    "skills/**/*.md",
+    "skills/**/*.txt",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "README.en.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "check": "node --check launch/mcp-launch.mjs && node --test tests/*.test.mjs",
+    "sync-skill": "node scripts/sync-skill.mjs"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "mcp",
+    "skill",
+    "gxworks",
+    "plc",
+    "mitsubishi"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
