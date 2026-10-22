@@ -1,5 +1,7 @@
 # dsh-gxworks
 
+Repository: <https://github.com/Arienax/dsh-gxworks> · Market index: <https://arienax.github.io/dsh-gxworks/index.json>
+
 A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) bundle that packages the
 **MCP server** and **task-routing skill** of [GXWorks Agent](https://github.com/Arienax/gxworks-agent).
 Install it once and the agent in the Harness can inspect, generate, edit offline, natively compile, and

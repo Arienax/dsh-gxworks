@@ -1,5 +1,7 @@
 # dsh-gxworks
 
+仓库：<https://github.com/Arienax/dsh-gxworks> · 市场索引：<https://arienax.github.io/dsh-gxworks/index.json>
+
 把 [GXWorks Agent](https://github.com/Arienax/gxworks-agent) 的 **MCP 服务**和 **路由 Skill** 打包成
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 插件。安装一次，Harness 里的 Agent
 就能对三菱 PLC 工程做只读检查、程序生成、离线 `.gxw` 编辑、后台原生编译检查和 Simulator2 观察。
