@@ -8,9 +8,11 @@
 #      独立技能源（providerName: gxworks），把 gxworks-mcp-router 技能带进目录。
 #
 # 启动参数由 launch/mcp-launch.mjs 解析：它找到本机 GXWorks Agent 安装根，
-# 选出 .exe / 虚拟环境 Python，并按需补上 --local。安装根可用
-# GXWORKS_AGENT_ROOT 覆盖，工作区可用 GXWORKS_MCP_WORKSPACE_DIR 覆盖。
-# 需要连接已启动的 Web 工作台时，在下面的 args 里加 '--service'。
+# 选出 .exe / 虚拟环境 Python，并按需补上 --local。安装根依次取
+# --agent-root、GXWORKS_AGENT_ROOT/GXWORKS_AGENT_HOME、%USERPROFILE%\.dsh\
+# dsh-gxworks\settings.json（由 --set-root 写入）、当前目录上级、PATH。
+# 工作区可用 GXWORKS_MCP_WORKSPACE_DIR 覆盖；需要连接已启动的 Web 工作台时，
+# 在下面的 args 里加 '--service'。
 #
 # 两个 baseUrl 表达式都先按“本 patch 所在目录”解析，再退回按包名解析，
 # 因此工作区链接安装与 profile 安装都能找到同一份 launch/ 与 skills/。
