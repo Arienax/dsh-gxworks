@@ -61,13 +61,17 @@ The root is written to `%USERPROFILE%\.dsh\dsh-gxworks\settings.json`, and the d
 either `GXWorks-Agent-MCP.exe` or `scripts\mcp_entry.py`. Setting `GXWORKS_AGENT_ROOT`, or working inside
 the installation, achieves the same thing.
 
-Then install the package into Harness (source form while it is not on npm; swap `--profile` for yours):
+Then install the package into Harness (swap `--profile` for yours):
+
+```powershell
+dsh plugin --profile web add dsh-gxworks
+```
+
+To track the repository instead of the npm release, use the source form:
 
 ```powershell
 dsh plugin --profile web add github:Arienax/dsh-gxworks
 ```
-
-Once it is published to npm, the equivalent command is `dsh plugin --profile web add dsh-gxworks`.
 
 You can also link a local checkout through the plugin manager in a Harness session:
 
@@ -76,8 +80,8 @@ plugin_manager(action: install_bundle, target: "D:\\dsh-gxworks")
 ```
 
 Or register the package in the profile's `dsh.profile.bundles` so its `cordis.patch.yml` joins the layer
-stack. After installation, confirm that the `gxworks-mcp` and `gxworks-skills` rows are active, that
-`mcp__gxworks__*` tools are listed (for example `mcp__gxworks__list_projects`), and that
+stack. After installation, confirm that the `gxworks-mcp`, `gxworks-skills`, and `dsh-gxworks` rows are
+active, that `mcp__gxworks__*` tools are listed (for example `mcp__gxworks__list_projects`), and that
 `gxworks-mcp-router` appears in the skill catalog.
 
 ## Configuration

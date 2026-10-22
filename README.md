@@ -59,13 +59,17 @@ node launch/mcp-launch.mjs --print-plan      # 核对解析结果
 `GXWorks-Agent-MCP.exe` 或 `scripts\mcp_entry.py`，否则直接拒绝。也可以用环境变量
 `GXWORKS_AGENT_ROOT` 代替，或把工作目录放在安装目录之内。
 
-然后在 Harness 里装这个包（未发布 npm 时用源码安装形式，`--profile` 换成你自己在用的 profile）：
+然后在 Harness 里装这个包（`--profile` 换成你自己在用的 profile）：
+
+```powershell
+dsh plugin --profile web add dsh-gxworks
+```
+
+想跟源码走、不用 npm 版本时，用源码安装形式：
 
 ```powershell
 dsh plugin --profile web add github:Arienax/dsh-gxworks
 ```
-
-发布到 npm 之后，等价命令是 `dsh plugin --profile web add dsh-gxworks`。
 
 也可以在本机源码检出目录里用插件管理器按绝对路径链装：
 
@@ -76,7 +80,7 @@ plugin_manager(action: install_bundle, target: "D:\\dsh-gxworks")
 或者手动把本包加入 profile：在 profile 的 `package.json` 里把它登记到 `dsh.profile.bundles`，
 让 `cordis.patch.yml` 进入层栈。安装后确认三件事：
 
-1. 插件列表里 `gxworks-mcp` 与 `gxworks-skills` 两行都是 active；
+1. 插件列表里 `gxworks-mcp`、`gxworks-skills`、`dsh-gxworks` 三行都是 active；
 2. 工具列表出现 `mcp__gxworks__*`，例如 `mcp__gxworks__list_projects`；
 3. 技能目录出现 `gxworks-mcp-router`。
 
