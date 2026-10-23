@@ -36,6 +36,23 @@
 | `pending` / `confirmation_required` / `execution_consent_required` | 当前操作等待工作台批准或操作员配置原生执行许可 | 向用户说明当前待确认状态、提案编号或所需的执行许可配置。 |
 | `source_ref` / `session_id` / `target_ref` 失效 | 临时快照过期、GX 窗口重启或模拟器重新连接 | 重新调用对应的发现、快照或连接工具获取最新标识。 |
 
+## 手册检索结果的判读
+
+`search_plc_manual` 返回 `results` 与 `coverage`。检索命中是“有相关证据”，不是“事实已成立”，也不是“可调用”；先读 `coverage`，再读命中正文。
+
+| 字段 | 含义 | 不能由此声称 |
+| --- | --- | --- |
+| `coverage.targets[].identity_found` | 该指令、软元件或错误码的身份是否被定位 | 被问的具体方面已回答。 |
+| `coverage.targets[].status` | `complete` 表示被问方面已有 `source_verified` 事实；`incomplete` 附带 `reason` 与逐项 `aspects` | 未成立方面可以由相邻记录或常识补齐。 |
+| `aspects[].status` | `answered`（已核实）、`unverified`（有声明未核验）、`missing`（该方面无事实）、`unresolved`（仅有未知或冲突） | `unverified`/`missing`/`unresolved` 都按未建立处理，说明缺什么，而不是给出猜想的取值。 |
+| `call_available` / `call_admission` | 当前语言与工程能否构造调用；`st_not_admitted`、`unverified` 分别表示未准入和未核验 | 不能反推手册语义缺失或该指令不存在。 |
+| `results[].text` 中的 `facts[].status` | `source_verified`、`candidate_evidence`、`declared_unverified`、`unknown`、`conflict`、`not_applicable` | `candidate_evidence` 与 `declared_unverified` 不能当作核实结论；`conflict` 与 `unknown` 必须原样披露。 |
+| `count` / `top_k` | `top_k` 是上限，不是配额；`count` 小于 `top_k` 表示没有更多相关证据 | 不能据此认为手册没有相关内容，也不能把低相关记录算作答案。 |
+
+错误码与症状分开处理：给出具体错误码时只把命中该码的记录当作候选，`status="unresolved"` 且 `reason="exact_fact_not_found"` 时如实回报该码尚无已核实事实；只描述症状时返回的是候选错误码，须标明是候选并说明其 `cause`、`recovery`、`trigger` 是否 `unknown`。
+
+空 `query` 返回 `INVALID_ARGUMENTS`；`UNKNOWN_PLC_MODEL` 表示型号不在手册检索范围（`details.known_model_count`），`KNOWLEDGE_UNAVAILABLE` 表示该型号事实尚未随插件发布（`details.knowledge_status`）。两者都不是 GX Works2 工程能力问题，按 `next_actions` 改用已收录型号检索。
+
 ## 常见选型对照
 
 - **后台原生编译 vs. 本地产物导出**：需要用 GX Works2 检查 `.gxw` 能否编译通过时调用 `validate_project(native=true)`；需要生成 SVG、JSON、CSV 等本地产物时调用 `compile_project`。
