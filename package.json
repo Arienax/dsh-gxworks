@@ -1,6 +1,6 @@
 {
   "name": "dsh-gxworks",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DeepSeek Harness bundle: connects the GXWorks Agent MCP server and ships its PLC task-routing skill.",
   "license": "Apache-2.0",
   "author": "Arienax",
