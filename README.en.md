@@ -191,6 +191,7 @@ npm run sync-skill -- --source "<GXWORKS_AGENT_DIR>"
 
 `skills/gxworks-mcp-router/` is a verbatim copy produced by `scripts/sync-skill.mjs`, which also records
 provenance. The upstream skill remains the single source of truth.
+The source must be a Git checkout with no uncommitted skill changes. `COPYING.md` records its actual `HEAD`; the skill's `source-commit` metadata continues to identify the corresponding product source revision.
 
 ## License and provenance
 

@@ -11,6 +11,7 @@
  */
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -33,10 +34,21 @@ const source =
   process.env.GXWORKS_AGENT_HOME ??
   resolve(PACKAGE_ROOT, '..', 'gxworks-agent')
 
-const from = join(resolve(source), 'skills', SKILL_NAME)
+const sourceRoot = resolve(source)
+const from = join(sourceRoot, 'skills', SKILL_NAME)
 if (!existsSync(join(from, 'SKILL.md'))) {
   console.error(`[dsh-gxworks] 找不到上游技能：${from}`)
   console.error('用法：node scripts/sync-skill.mjs --source <GXWORKS_AGENT_DIR>')
+  process.exit(2)
+}
+
+const commit = execFileSync('git', ['-C', sourceRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+const changes = execFileSync(
+  'git', ['-C', sourceRoot, 'status', '--porcelain', '--untracked-files=all', '--', `skills/${SKILL_NAME}`],
+  { encoding: 'utf8' },
+).trim()
+if (changes) {
+  console.error('[dsh-gxworks] 上游技能有未提交的改动，请先提交后再同步。')
   process.exit(2)
 }
 
@@ -48,7 +60,6 @@ await cp(from, destination, { recursive: true })
 // Provenance note kept next to the copy so the package explains itself offline.
 const header = await readFile(join(destination, 'SKILL.md'), 'utf8')
 const version = /^  version: '?(?<version>[^'\n]+)'?$/m.exec(header)?.groups?.version ?? 'unknown'
-const commit = /^  source-commit: (?<commit>\S+)$/m.exec(header)?.groups?.commit ?? 'unknown'
 await writeFile(
   join(destination, 'COPYING.md'),
   [

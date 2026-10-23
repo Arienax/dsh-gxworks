@@ -4,7 +4,7 @@
 
 - 上游仓库：https://github.com/Arienax/gxworks-agent
 - 技能版本：1.0.1
-- 同步自提交：e5f6ca03455c97e0feb7328a21493dcdbf7fa620
+- 同步自提交：190eadac7d14673d5cb7d35007000fa3bee1f067
 - 上游路径：`skills/gxworks-mcp-router/`
 - 许可：Apache-2.0（见本包 LICENSE）
 

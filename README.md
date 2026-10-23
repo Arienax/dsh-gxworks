@@ -204,6 +204,7 @@ npm run sync-skill -- --source "<GXWORKS_AGENT_DIR>"
 
 `skills/gxworks-mcp-router/` 是上游技能的原样副本，由 `scripts/sync-skill.mjs` 重新同步并写入来源说明；
 上游技能是唯一事实来源，本仓库不在此处改写技能内容。
+同步源须为 Git 检出，且技能目录没有未提交改动；`COPYING.md` 记录该检出的实际 `HEAD`，技能元数据中的 `source-commit` 仍表示其对应的产品源码版本。
 
 ## 许可与来源
 
