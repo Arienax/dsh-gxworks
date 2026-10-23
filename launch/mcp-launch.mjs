@@ -347,10 +347,8 @@ function run() {
     return
   }
 
-  log(
-    `使用安装根 ${plan.agentRoot}（来自 ${plan.agentRootSource}），启动 GXWorks Agent MCP（${plan.flavor}）：` +
-      `${plan.command} ${plan.args.join(' ')}`,
-  )
+  // Avoid printing local filesystem paths or forwarded arguments in routine logs.
+  log(`启动 GXWorks Agent MCP（${plan.flavor}；安装根来源：${plan.agentRootSource}）`)
   const child = spawn(plan.command, plan.args, {
     stdio: 'inherit',
     env: process.env,

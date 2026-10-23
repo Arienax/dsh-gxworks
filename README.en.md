@@ -50,10 +50,10 @@ dsh-gxworks/
 
 First record the local installation root once. The Harness working directory is usually inside the
 Harness checkout or another project, not next to GXWorks Agent, so this step is what makes discovery work
-across sessions:
+across sessions. Every `<..._DIR>` below is a placeholder for your own local installation or checkout path:
 
 ```powershell
-node launch/mcp-launch.mjs --set-root D:\gxworks-agent
+node launch/mcp-launch.mjs --set-root "<GXWORKS_AGENT_DIR>"
 node launch/mcp-launch.mjs --print-plan      # confirm the resolved command
 ```
 
@@ -76,7 +76,7 @@ dsh plugin --profile web add github:Arienax/dsh-gxworks
 You can also link a local checkout through the plugin manager in a Harness session:
 
 ```
-plugin_manager(action: install_bundle, target: "D:\\dsh-gxworks")
+plugin_manager(action: install_bundle, target: "<DSH_GXWORKS_DIR>")
 ```
 
 Or register the package in the profile's `dsh.profile.bundles` so its `cordis.patch.yml` joins the layer
@@ -131,7 +131,7 @@ not prove runtime behaviour, and a saved version in `local` mode does not mean a
 ## Verify and troubleshoot
 
 ```powershell
-node launch/mcp-launch.mjs --set-root D:\gxworks-agent
+node launch/mcp-launch.mjs --set-root "<GXWORKS_AGENT_DIR>"
 node launch/mcp-launch.mjs --print-plan
 .venv\Scripts\python.exe scripts\mcp_entry.py --local --check   # in the GXWorks Agent directory
 ```
@@ -167,12 +167,15 @@ The index is generated: `market/plugins.txt` lists the sources and `docs/index.j
 generator that ships with DSH and checked by its validator.
 
 ```powershell
-cd D:\dsh\deepseek-harness
+# Run from the dsh-gxworks repository root.
+$bundleDir = (Get-Location).Path
+Push-Location "<DEEPSEEK_HARNESS_DIR>"
 pnpm --filter @deepseek-ai/dsh-plugin-market-generator start `
-  --input D:\dsh-gxworks\market\plugins.txt `
-  --output D:\dsh-gxworks\docs\index.json `
+  --input (Join-Path $bundleDir 'market/plugins.txt') `
+  --output (Join-Path $bundleDir 'docs/index.json') `
   --title "GXWorks Agent Plugins" `
   --description "GXWorks Agent MCP server and PLC task-routing skill for DeepSeek Harness."
+Pop-Location
 ```
 
 The release order is: bump `version` in `package.json`, commit and push, regenerate the index, then commit
@@ -183,7 +186,7 @@ The release order is: bump `version` in `package.json`, commit and push, regener
 ```powershell
 npm test          # launcher resolution order
 npm run check     # syntax check plus tests
-npm run sync-skill -- --source D:\gxworks-agent
+npm run sync-skill -- --source "<GXWORKS_AGENT_DIR>"
 ```
 
 `skills/gxworks-mcp-router/` is a verbatim copy produced by `scripts/sync-skill.mjs`, which also records

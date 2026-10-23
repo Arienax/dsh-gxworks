@@ -48,10 +48,10 @@ dsh-gxworks/
 ## 安装
 
 先在命令行里登记本机安装根。Harness 的工作目录通常在自身源码或其他工程里，不一定紧邻 GXWorks Agent，
-所以这一步是一次性、跨会话生效的：
+所以这一步是一次性、跨会话生效的。下方 `<..._DIR>` 均为目录占位符，请替换成自己的实际安装或检出目录：
 
 ```powershell
-node launch/mcp-launch.mjs --set-root D:\gxworks-agent
+node launch/mcp-launch.mjs --set-root "<GXWORKS_AGENT_DIR>"
 node launch/mcp-launch.mjs --print-plan      # 核对解析结果
 ```
 
@@ -74,7 +74,7 @@ dsh plugin --profile web add github:Arienax/dsh-gxworks
 也可以在本机源码检出目录里用插件管理器按绝对路径链装：
 
 ```
-plugin_manager(action: install_bundle, target: "D:\\dsh-gxworks")
+plugin_manager(action: install_bundle, target: "<DSH_GXWORKS_DIR>")
 ```
 
 或者手动把本包加入 profile：在 profile 的 `package.json` 里把它登记到 `dsh.profile.bundles`，
@@ -141,7 +141,7 @@ plugin_manager(action: install_bundle, target: "D:\\dsh-gxworks")
 
 ```powershell
 # 登记安装根，并看启动器为当前机器解析出的命令
-node launch/mcp-launch.mjs --set-root D:\gxworks-agent
+node launch/mcp-launch.mjs --set-root "<GXWORKS_AGENT_DIR>"
 node launch/mcp-launch.mjs --print-plan
 
 # 在 GXWorks Agent 目录里验证 Python 侧运行时
@@ -180,12 +180,15 @@ URL，就能看到并安装 `dsh-gxworks`。索引只描述本仓库，安装仍
 索引是生成物：`market/plugins.txt` 是来源列表，`docs/index.json` 由 DSH 自带的生成器写出并已通过其校验器。
 
 ```powershell
-cd D:\dsh\deepseek-harness
+# 在 dsh-gxworks 仓库根目录执行
+$bundleDir = (Get-Location).Path
+Push-Location "<DEEPSEEK_HARNESS_DIR>"
 pnpm --filter @deepseek-ai/dsh-plugin-market-generator start `
-  --input D:\dsh-gxworks\market\plugins.txt `
-  --output D:\dsh-gxworks\docs\index.json `
+  --input (Join-Path $bundleDir 'market/plugins.txt') `
+  --output (Join-Path $bundleDir 'docs/index.json') `
   --title "GXWorks Agent Plugins" `
   --description "GXWorks Agent 的 MCP 服务与 PLC 任务路由技能，供 DeepSeek Harness 使用。"
+Pop-Location
 ```
 
 发版顺序是：改 `package.json` 的 `version` → 提交并推送 → 重新生成索引 → 提交 `docs/index.json`。
@@ -196,7 +199,7 @@ pnpm --filter @deepseek-ai/dsh-plugin-market-generator start `
 ```powershell
 npm test          # 启动器解析顺序的单元测试
 npm run check     # 语法检查 + 测试
-npm run sync-skill -- --source D:\gxworks-agent
+npm run sync-skill -- --source "<GXWORKS_AGENT_DIR>"
 ```
 
 `skills/gxworks-mcp-router/` 是上游技能的原样副本，由 `scripts/sync-skill.mjs` 重新同步并写入来源说明；

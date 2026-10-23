@@ -123,7 +123,7 @@ test('a remembered installation root survives a working directory elsewhere', ()
   const result = planLaunch({
     argv: [],
     env: { USERPROFILE: resolve('C:', 'user') },
-    cwd: resolve('D:', 'dsh', 'deepseek-harness'),
+    cwd: resolve('D:', 'unrelated-project'),
     ...probes([join(root, ENTRY_SCRIPT), python], [root], root),
   })
   assert.equal(result.agentRoot, root)

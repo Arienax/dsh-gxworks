@@ -36,7 +36,7 @@ const source =
 const from = join(resolve(source), 'skills', SKILL_NAME)
 if (!existsSync(join(from, 'SKILL.md'))) {
   console.error(`[dsh-gxworks] 找不到上游技能：${from}`)
-  console.error('用法：node scripts/sync-skill.mjs --source D:\\gxworks-agent')
+  console.error('用法：node scripts/sync-skill.mjs --source <GXWORKS_AGENT_DIR>')
   process.exit(2)
 }
 

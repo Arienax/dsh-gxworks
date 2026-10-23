@@ -4,3 +4,10 @@ npm-debug.log*
 .DS_Store
 Thumbs.db
 market/.plugin-market-cache/
+
+# Local settings and credentials
+.env
+.env.*
+!.env.example
+.dsh/
+*.local.json
