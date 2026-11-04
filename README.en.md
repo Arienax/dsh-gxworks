@@ -4,7 +4,7 @@ A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin wit
 **complete GXWorks Agent MCP backend and PLC routing skill included**.
 On Windows x64, no separate Python/backend installation or path configuration is needed.
 
-中文: [README.md](README.md)
+[GitHub repository](https://github.com/Arienax/dsh-gxworks) · [中文](README.md)
 
 ## Install
 

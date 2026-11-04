@@ -4,7 +4,7 @@
 **内置完整 MCP 后端和 PLC 路由技能**。Windows x64 安装即用，无需另装 Python、
 GXWorks Agent，也无需设置后端路径。
 
-English: [README.en.md](README.en.md)
+[GitHub 仓库](https://github.com/Arienax/dsh-gxworks) · [English](README.en.md)
 
 ## 安装
 

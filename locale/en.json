@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "GXWorks Agent (MCP + Skill)",
-    "description": "Includes the complete GXWorks Agent MCP backend and Mitsubishi PLC routing skill. Ready on Windows x64 without installing Python or a separate backend; supports project inspection, generation, offline editing, native compilation and Simulator2 observation."
+    "description": "Read, generate and edit Mitsubishi PLC projects in DeepSeek Harness. The Windows x64 plugin bundles the MCP backend and routing skill, and works with GX Works2 for compilation and Simulator2 for observation. GitHub project at https://github.com/Arienax/dsh-gxworks"
   }
 }

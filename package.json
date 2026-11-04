@@ -1,7 +1,7 @@
 {
   "name": "dsh-gxworks",
-  "version": "0.2.0",
-  "description": "DeepSeek Harness bundle with the complete GXWorks Agent MCP backend and its PLC task-routing skill. No separate Python or backend installation required on Windows x64.",
+  "version": "0.2.1",
+  "description": "Read, generate and edit Mitsubishi PLC projects in DeepSeek Harness. Includes the GXWorks Agent MCP backend for Windows x64. GitHub project at https://github.com/Arienax/dsh-gxworks",
   "license": "Apache-2.0",
   "author": "Arienax",
   "homepage": "https://github.com/Arienax/dsh-gxworks#readme",

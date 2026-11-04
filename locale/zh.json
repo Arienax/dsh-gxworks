@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "GXWorks Agent（MCP + Skill）",
-    "description": "内置完整 GXWorks Agent MCP 后端与三菱 PLC 路由技能。Windows x64 安装即用，无需另装 Python 或后端；支持工程读取、生成、离线编辑、原生编译与 Simulator2 观察。"
+    "description": "在 DeepSeek Harness 中读取、生成和编辑三菱 PLC 工程。Windows x64 版内置 MCP 后端和路由技能，可连接 GX Works2 编译工程、用 Simulator2 观察运行状态。GitHub 项目地址 https://github.com/Arienax/dsh-gxworks"
   }
 }
