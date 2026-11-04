@@ -3,8 +3,8 @@
 本目录是 `Arienax/gxworks-agent` 中同名技能的原样副本，随本插件分发，便于一次安装即带齐 MCP 工具选型说明。
 
 - 上游仓库：https://github.com/Arienax/gxworks-agent
-- 技能版本：1.0.1
-- 同步自提交：190eadac7d14673d5cb7d35007000fa3bee1f067
+- 技能版本：1.2.0
+- 同步自提交：21861ab53bac663ceed2eb612daa09fbe742b65d
 - 上游路径：`skills/gxworks-mcp-router/`
 - 许可：Apache-2.0（见本包 LICENSE）
 

@@ -1,6 +1,7 @@
 node_modules/
 npm-debug.log*
 *.tgz
+dist/
 .DS_Store
 Thumbs.db
 market/.plugin-market-cache/

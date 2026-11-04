@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "GXWorks Agent (MCP + Skill)",
-    "description": "Connects the local GXWorks Agent MCP server and ships its Mitsubishi PLC task-routing skill, so the agent can read, generate, edit offline, natively compile, and simulate GX Works2 projects."
+    "description": "Includes the complete GXWorks Agent MCP backend and Mitsubishi PLC routing skill. Ready on Windows x64 without installing Python or a separate backend; supports project inspection, generation, offline editing, native compilation and Simulator2 observation."
   }
 }

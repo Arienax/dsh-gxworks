@@ -13,6 +13,7 @@ import {
   settingsPath,
   splitArgs,
 } from '../launch/mcp-launch.mjs'
+import { backend, bundledArchive, bundledRuntimeRoot } from '../launch/bundled-runtime.mjs'
 
 const root = resolve('C:', 'gxworks-agent')
 const python = join(root, '.venv', 'Scripts', 'python.exe')
@@ -178,6 +179,39 @@ test('the release launcher on PATH is accepted without any root', () => {
   })
   assert.equal(result.agentRootSource, 'path')
   assert.equal(result.command, exe)
+})
+
+test('the bundled backend works without Python, PATH, settings or a neighbouring checkout', () => {
+  const env = { LOCALAPPDATA: resolve('C:', 'new-user', 'AppData', 'Local') }
+  const result = planLaunch({
+    env, cwd: resolve('D:', 'unrelated'),
+    ...probes([bundledArchive], [], undefined),
+  })
+  assert.equal(result.agentRootSource, 'bundled')
+  assert.equal(result.command, join(bundledRuntimeRoot(env), backend.executable))
+  assert.deepEqual(result.args, ['--local'])
+  assert.equal(result.prepareRequired, true)
+})
+
+test('a bundled backend takes precedence over a checkout found in the working directory', () => {
+  const result = plan([], { files: [bundledArchive, join(root, ENTRY_SCRIPT), python] })
+  assert.equal(result.agentRootSource, 'bundled')
+})
+
+test('explicit and remembered backend installations can override the bundle', () => {
+  for (const [argv, env, remembered, source] of [
+    [['--agent-root', root], {}, undefined, 'flag'],
+    [[], { GXWORKS_AGENT_ROOT: root }, undefined, 'env'],
+    [[], {}, root, 'settings'],
+  ]) {
+    const result = plan(argv, { files: [bundledArchive, join(root, FROZEN_LAUNCHER)], env, remembered })
+    assert.equal(result.agentRootSource, source)
+    assert.equal(result.command, join(root, FROZEN_LAUNCHER))
+  }
+})
+
+test('an invalid explicit installation is reported instead of silently using the bundle', () => {
+  assert.throws(() => plan(['--agent-root', root], { files: [bundledArchive] }), LaunchPlanError)
 })
 
 test('--set-root remembers the installation and resolves immediately', () => {

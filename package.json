@@ -1,7 +1,7 @@
 {
   "name": "dsh-gxworks",
-  "version": "0.1.2",
-  "description": "DeepSeek Harness bundle: connects the GXWorks Agent MCP server and ships its PLC task-routing skill.",
+  "version": "0.2.0",
+  "description": "DeepSeek Harness bundle with the complete GXWorks Agent MCP backend and its PLC task-routing skill. No separate Python or backend installation required on Windows x64.",
   "license": "Apache-2.0",
   "author": "Arienax",
   "homepage": "https://github.com/Arienax/dsh-gxworks#readme",
@@ -26,6 +26,11 @@
     "index.mjs",
     "cordis.patch.yml",
     "launch/mcp-launch.mjs",
+    "launch/bundled-runtime.mjs",
+    "runtime/backend.json",
+    "runtime/GXWorks-Agent-MCP-windows-x64.zip",
+    "runtime/README.md",
+    "scripts/check-package.mjs",
     "skills/**/*.md",
     "skills/**/*.txt",
     "locale/*.json",
@@ -37,7 +42,10 @@
   "scripts": {
     "test": "node --test tests/*.test.mjs",
     "check": "node --check launch/mcp-launch.mjs && node --test tests/*.test.mjs",
-    "sync-skill": "node scripts/sync-skill.mjs"
+    "sync-skill": "node scripts/sync-skill.mjs",
+    "prepack": "node scripts/check-package.mjs",
+    "prepare-runtime": "node launch/bundled-runtime.mjs",
+    "check-install": "node scripts/check-install.mjs"
   },
   "keywords": [
     "dsh",

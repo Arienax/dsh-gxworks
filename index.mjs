@@ -4,7 +4,7 @@
  * 这个 bundle 的主体是 `cordis.patch.yml`：它插入 `@deepseek-ai/dsh-mcp-client`（以 stdio 启动本机
  * GXWorks Agent MCP）与 `@deepseek-ai/dsh-skill-filesystem`（注册本包自带的 gxworks-mcp-router 技能）。
  *
- * 本模块不接管那两个行，只做一件安装完整性检查：确认包内确实带着 launcher 与技能目录。
+ * 本模块不接管那两个行，只检查包内后端归档、launcher 与技能目录是否齐全。
  * 缺文件时（例如安装形态丢了 `files` 里的条目）在启动日志里直接告警，而不是等到第一次调工具才失败。
  */
 import { existsSync } from 'node:fs'
@@ -15,7 +15,8 @@ import { fileURLToPath } from 'node:url'
 export const name = 'dsh-gxworks'
 
 const packageRoot = dirname(fileURLToPath(import.meta.url))
-const required = ['launch/mcp-launch.mjs', 'skills']
+const required = ['launch/mcp-launch.mjs', 'launch/bundled-runtime.mjs',
+  'runtime/backend.json', 'runtime/GXWorks-Agent-MCP-windows-x64.zip', 'skills']
 
 /**
  * 校验安装形态。
@@ -28,5 +29,5 @@ export function apply(ctx) {
     logger?.warn?.(`dsh-gxworks: 安装包缺少 ${missing.join('、')}，MCP 工具与技能不可用；请重新安装本包`)
     return
   }
-  logger?.debug?.('dsh-gxworks: launcher 与 skills 就位')
+  logger?.debug?.('dsh-gxworks: 内置后端、launcher 与 skills 就位')
 }

@@ -6,8 +6,8 @@
  * a working directory that is the Harness installation, and no knowledge of
  * Windows install layouts. This launcher therefore resolves the local GXWorks
  * Agent installation from, in order: `--agent-root`, `GXWORKS_AGENT_ROOT`,
- * `GXWORKS_AGENT_HOME`, a remembered root (see `--set-root`), the working
- * directory and its parents, then `PATH`. It prefers the frozen
+ * `GXWORKS_AGENT_HOME`, a remembered root (see `--set-root`), the bundled
+ * backend, working directory and its parents, then `PATH`. It prefers the frozen
  * `GXWorks-Agent-MCP.exe`, then `.venv-mcp`, `.venv`, `py -3`, and `python`,
  * and adds `--local` when the caller selected no runtime mode.
  *
@@ -19,6 +19,7 @@ import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { backend, bundledArchive, bundledRuntimeRoot, prepareBundledRuntime, runtimeReady } from './bundled-runtime.mjs'
 
 /** Frozen product launcher shipped by the GXWorks Agent MCP release package. */
 export const FROZEN_LAUNCHER = 'GXWorks-Agent-MCP.exe'
@@ -73,7 +74,7 @@ function defaultFindOnPath(name, env) {
 }
 
 /** Where a resolved installation root came from, for `--print-plan`. */
-export const ROOT_SOURCES = ['flag', 'env', 'settings', 'cwd', 'path']
+export const ROOT_SOURCES = ['flag', 'env', 'settings', 'bundled', 'cwd', 'path']
 
 /** Per-user settings file, outside every workspace and outside this package. */
 export function settingsPath(env = process.env) {
@@ -171,6 +172,8 @@ export function planLaunch(options = {}) {
     isFile = defaultIsFile,
     isDir = defaultIsDir,
     findOnPath = defaultFindOnPath,
+    archive = bundledArchive,
+    bundledRoot = bundledRuntimeRoot(env),
     now = () => new Date().toISOString(),
   } = options
 
@@ -290,6 +293,14 @@ export function planLaunch(options = {}) {
       )
     }
     if (looksLikeAgentRoot(candidate.root, isFile)) return finish(resolveCommand(candidate))
+    if (candidate.source !== 'settings') {
+      throw new LaunchPlanError(`指定的 GXWorks Agent 目录缺少后端入口：${candidate.root}`)
+    }
+  }
+
+  if (isFile(archive)) {
+    return finish({ command: join(bundledRoot, backend.executable), args: [], flavor: 'frozen',
+      agentRoot: bundledRoot, agentRootSource: 'bundled', prepareRequired: !runtimeReady(bundledRoot) })
   }
 
   const discovered = discoverAgentRoot({ cwd, isFile })
@@ -304,7 +315,7 @@ export function planLaunch(options = {}) {
 
   throw new LaunchPlanError(
     [
-      '未找到本机 GXWorks Agent 安装目录。',
+      '插件缺少内置后端，且未找到本机 GXWorks Agent。请重新安装完整的 dsh-gxworks 包。',
       '任选一种方式指定：',
       `  1. node launch/mcp-launch.mjs --set-root <安装目录>   （记住到 ${settingsPath(env)}）`,
       `  2. 在 Harness 环境里设置 GXWORKS_AGENT_ROOT=<安装目录>`,
@@ -345,6 +356,16 @@ function run() {
         `下次启动使用：${plan.command} ${plan.args.join(' ')}\n`,
     )
     return
+  }
+
+  if (plan.agentRootSource === 'bundled') {
+    try {
+      prepareBundledRuntime()
+    } catch (error) {
+      log(error.message)
+      process.exitCode = 2
+      return
+    }
   }
 
   // Avoid printing local filesystem paths or forwarded arguments in routine logs.

@@ -7,10 +7,10 @@
 #   2. 用 @deepseek-ai/dsh-skill-filesystem 注册一个只扫描本包 skills/ 的
 #      独立技能源（providerName: gxworks），把 gxworks-mcp-router 技能带进目录。
 #
-# 启动参数由 launch/mcp-launch.mjs 解析：它找到本机 GXWorks Agent 安装根，
-# 选出 .exe / 虚拟环境 Python，并按需补上 --local。安装根依次取
+# 启动参数由 launch/mcp-launch.mjs 解析：默认使用包内完整 MCP 后端，
+# 首次启动本地解压，后续复用；无需另装 Python 或 GXWorks Agent。安装根依次取
 # --agent-root、GXWORKS_AGENT_ROOT/GXWORKS_AGENT_HOME、%USERPROFILE%\.dsh\
-# dsh-gxworks\settings.json（由 --set-root 写入）、当前目录上级、PATH。
+# dsh-gxworks\settings.json（由 --set-root 写入）、内置后端、当前目录上级、PATH。
 # 工作区可用 GXWORKS_MCP_WORKSPACE_DIR 覆盖；需要连接已启动的 Web 工作台时，
 # 在下面的 args 里加 '--service'。
 #
@@ -28,7 +28,7 @@
         args: !!js "(() => { const fs = process.getBuiltinModule('node:fs'); const p = process.getBuiltinModule('node:path'); const u = process.getBuiltinModule('node:url'); const m = process.getBuiltinModule('node:module'); const beside = p.join(u.fileURLToPath(baseUrl), 'launch', 'mcp-launch.mjs'); if (fs.existsSync(beside)) return [beside]; const pkg = m.createRequire(baseUrl).resolve('dsh-gxworks/package.json'); return [p.join(p.dirname(pkg), 'launch', 'mcp-launch.mjs')]; })()"
         # 原生编译、冷重开与仿真采样都可能超过默认 60 秒。
         toolCallTimeoutMs: 600000
-        # 本机未安装 GX Works2 / GXWorks Agent 时不让整个 Harness 起不来，
+        # 后端准备或连接失败时不阻止整个 Harness 启动，
         # 失败原因写在 Harness 日志里。
         failOnStartupError: false
         reconnect:
