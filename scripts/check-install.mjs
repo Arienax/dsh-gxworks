@@ -1,9 +1,9 @@
 /** Exercise the installed package's bundled backend with no external GXWorks Agent or Python. */
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtemp, mkdir, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import { once } from 'node:events'
@@ -13,7 +13,7 @@ const scratch = await mkdtemp(join(tmpdir(), 'dsh-gxworks-install-'))
 const user = join(scratch, 'user')
 await mkdir(user)
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
-  !/^(GXWORKS_|GX_|PLC_|PYTHON|OPENAI_|ANTHROPIC_)/i.test(key)))
+  !/^(GXWORKS2?_|GX_|PLC_|PYTHON|OPENAI_|ANTHROPIC_)/i.test(key)))
 Object.assign(env, {
   USERPROFILE: user, HOME: user, LOCALAPPDATA: join(user, 'AppData', 'Local'),
   APPDATA: join(user, 'AppData', 'Roaming'), PATH: dirname(process.execPath),
@@ -80,6 +80,17 @@ try {
     assert(tools.some(tool => tool.name === name), `缺少工具 ${name}`)
   }
   await call('list_projects', {})
+  const { data: discovery } = await call('list_gxworks2_sessions', {})
+  assert.equal(typeof discovery.gx_works2_installed, 'boolean')
+  assert(Array.isArray(discovery.sessions))
+  if (discovery.gx_works2_installed) {
+    const exe = discovery.gx_works2_executable
+    assert(isAbsolute(exe) && basename(exe).toLowerCase() === 'gd2.exe' && (await stat(exe)).isFile())
+    const cached = JSON.parse(await readFile(join(env.PLC_AI_DATA_DIR, 'gxworks2-installation.json'), 'utf8'))
+    assert.equal(cached.gx_works2_executable, exe)
+  } else {
+    assert.equal(discovery.gx_works2_executable, null)
+  }
   const created = await call('create_project', { name: 'Bundled backend install check', plc_model: 'FX3U', target_mode: 'ladder' })
   const facts = await call('search_plc_manual', { query: 'PLSY 操作数', plc_model: 'FX3U', top_k: 2 })
   const dereference = value => value?.$ref ? facts.data.objects[value.$ref.slice('#/objects/'.length)] : value
@@ -92,6 +103,7 @@ try {
   process.stdout.write(`${JSON.stringify({ package: installed, server: initialized.serverInfo.name,
     tools: tools.length, backend: 'bundled', firstLaunchExtraction: 'passed',
     projectCreated: created.ok, factResults: rows.length, generationContext: 'passed',
+    gxWorks2Executable: discovery.gx_works2_executable, visibleWindows: discovery.sessions.length,
     pythonOnPath: false, externalAgentConfigured: false }, null, 2)}\n`)
 } catch (error) {
   process.stderr.write(`${error.stack}\n${diagnostics}\n`)

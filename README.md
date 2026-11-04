@@ -16,9 +16,10 @@ dsh plugin --profile web add dsh-gxworks
 
 ## 使用
 
-安装后可以在同一 profile 的对话中试试下面两条指令。
+安装后可以在同一 profile 的对话中试试这些指令。
 
 - “列出我的 PLC 工程。”—— 调用 `mcp__gxworks__list_projects`，也可用来确认插件已连接。
+- “GX Works2 安装在哪里？有打开的工程吗？”—— `mcp__gxworks__list_gxworks2_sessions` 返回后端检测到的可执行文件路径，并单独列出窗口与工程状态。
 - “读取这个 GXW 文件，说明 MAIN 程序的启动条件。”—— 在对话中提供工程文件路径。
 
 更新用 `dsh plugin --profile web update dsh-gxworks`，卸载用 `dsh plugin --profile web remove dsh-gxworks`。

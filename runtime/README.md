@@ -1,8 +1,8 @@
 # Bundled GXWorks Agent backend
 
-`GXWorks-Agent-MCP-windows-x64.zip` is the complete, unmodified MCP asset from
-[GXWorks Agent 0.4.0](https://github.com/Arienax/gxworks-agent/releases/tag/v0.4.0-20261104).
-The exact release and source commit are recorded in [backend.json](backend.json).
+`GXWorks-Agent-MCP-windows-x64.zip` is built with the upstream release script
+from [GXWorks Agent](https://github.com/Arienax/gxworks-agent)'s `fix-rag` branch.
+[backend.json](backend.json) records the exact source commit and cache directory identifier.
 
 The archive is committed as a normal Git file so Git-based Harness installs receive
 the actual backend without Git LFS or a separate download step. It is also included
@@ -19,6 +19,6 @@ On Windows x64 the launcher extracts it to
 Later launches reuse that release. Projects and MCP state use GXWorks Agent's
 normal data directories and are not stored in this cache or the plugin directory.
 
-To update, download the full MCP ZIP from the selected upstream release, update
+To update, obtain the complete MCP ZIP for the selected upstream commit, update
 `backend.json`, sync the skill from the matching public source checkout, run
 `npm run check`, pack, and run `npm run check-install -- <unpacked-package>`.
