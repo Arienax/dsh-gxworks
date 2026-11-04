@@ -372,7 +372,7 @@ function run() {
   log(`启动 GXWorks Agent MCP（${plan.flavor}；安装根来源：${plan.agentRootSource}）`)
   const child = spawn(plan.command, plan.args, {
     stdio: 'inherit',
-    env: process.env,
+    env: { ...process.env, GXWORKS_MCP_NEW_PROJECT_MODE: 'design' },
     windowsHide: true,
   })
 

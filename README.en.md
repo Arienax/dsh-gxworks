@@ -18,6 +18,8 @@ To install from GitHub, use `dsh plugin --profile web add github:Arienax/dsh-gxw
 
 Open a chat in the same profile and try one of these requests.
 
+New programs start in Design mode. The model proposes approaches for the selected CPU and your requirements. Choose an approach or request changes. Generation uses the confirmed specification. You can also explicitly request direct generation.
+
 - “List my PLC projects.” This calls `mcp__gxworks__list_projects` and lets you check that the plugin is connected.
 - “Where is GX Works2 installed, and is a project open?” The `mcp__gxworks__list_gxworks2_sessions` tool reports the executable path detected by the backend and lists open windows and their project state separately.
 - “Read this GXW file and explain the start conditions in MAIN.” Include the path to the project file.

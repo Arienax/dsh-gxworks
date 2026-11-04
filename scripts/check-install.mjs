@@ -101,7 +101,34 @@ try {
   assert(tools.find(tool => tool.name === 'search_plc_manual').inputSchema.properties.language.enum.includes('sfc'))
   const rows = dereference(document.results)
   assert(rows?.length > 0, JSON.stringify(facts))
-  await call('get_generation_context', { user_requirement: 'X0 controls Y0', workflow: 'direct_generation' })
+  assert.equal(created.data.next_actions[0].tool, 'get_design_context')
+  async function readContext(tool, args) {
+    const objects = {}
+    let page
+    do {
+      page = (await call(tool, args)).data
+      Object.assign(objects, page.objects)
+      args = page.delivery.next?.arguments
+    } while (args)
+    function resolveValue(v) {
+      if (v?.$ref?.startsWith('#/objects/')) return resolveValue(objects[v.$ref.slice('#/objects/'.length)])
+      if (v?.$merge) return Object.assign({}, ...resolveValue(v.$merge))
+      if (v?.$concat) return resolveValue(v.$concat).flat()
+      if (Array.isArray(v)) return v.map(resolveValue)
+      return v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, val]) => [k, resolveValue(val)])) : v
+    }
+    return resolveValue(page.document)
+  }
+  const design = await readContext('get_design_context', { user_requirement: 'X0 controls Y0' })
+  assert(design.analysis_instructions.includes('Analysis mode: design'))
+  const plan = await call('propose_design_plan', { analysis_id: design.analysis_id, analysis: {
+    summary: 'X0 controls Y0', execution_intent_claims: [], explicit_constraint_claims: [],
+    approaches: [{ approach_id: 'direct_contact', name: 'Direct contact', implementation_semantics: [] }],
+  } })
+  const saved = await call('confirm_design_plan', { draft_id: plan.data.draft_id, approach_id: 'direct_contact' })
+  assert.equal(saved.data.confirmed, true)
+  const context = await readContext('get_generation_context', saved.data.next_actions[0].arguments)
+  assert.equal(context.generation_input.confirmed_spec.selected_approach.approach_id, 'direct_contact')
   assert(diagnostics.includes('安装根来源：bundled'), diagnostics)
   assert(diagnostics.includes('首次准备内置 GXWorks Agent'), diagnostics)
   process.stdout.write(`${JSON.stringify({ package: installed, server: initialized.serverInfo.name,
