@@ -10,10 +10,10 @@
         "zh": "GXWorks Agent（MCP + Skill）"
       },
       "description": {
-        "en": "Includes the complete GXWorks Agent MCP backend and Mitsubishi PLC routing skill. Ready on Windows x64 without installing Python or a separate backend; supports project inspection, generation, offline editing, native compilation and Simulator2 observation.",
-        "zh": "内置完整 GXWorks Agent MCP 后端与三菱 PLC 路由技能。Windows x64 安装即用，无需另装 Python 或后端；支持工程读取、生成、离线编辑、原生编译与 Simulator2 观察。"
+        "en": "Read, generate and edit Mitsubishi PLC projects in DeepSeek Harness. The Windows x64 plugin bundles the MCP backend and routing skill, and works with GX Works2 for compilation and Simulator2 for observation. GitHub project at https://github.com/Arienax/dsh-gxworks",
+        "zh": "在 DeepSeek Harness 中读取、生成和编辑三菱 PLC 工程。Windows x64 版内置 MCP 后端和路由技能，可连接 GX Works2 编译工程、用 Simulator2 观察运行状态。GitHub 项目地址 https://github.com/Arienax/dsh-gxworks"
       },
-      "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjggMTI4IiB3aWR0aD0iMTI4IiBoZWlnaHQ9IjEyOCIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsPSJHWFdvcmtzIEFnZW50Ij4KICA8dGl0bGU+R1hXb3JrcyBBZ2VudDwvdGl0bGU+CiAgPHJlY3Qgd2lkdGg9IjEyOCIgaGVpZ2h0PSIxMjgiIHJ4PSIyOCIgZmlsbD0iIzBCMkE0NSIvPgogIDwhLS0gYnVzIHJhaWxzIC0tPgogIDxnIHN0cm9rZT0iIzRDQzJGRiIgc3Ryb2tlLXdpZHRoPSI2IiBzdHJva2UtbGluZWNhcD0icm91bmQiIGZpbGw9Im5vbmUiPgogICAgPHBhdGggZD0iTTI4IDI0djgwIi8+CiAgICA8cGF0aCBkPSJNMTAwIDI0djgwIi8+CiAgICA8cGF0aCBkPSJNMjggNjRoMTgiLz4KICAgIDxwYXRoIGQ9Ik04NiA2NGgxNCIvPgogIDwvZz4KICA8IS0tIHNlcmllcyBjb250YWN0cyAtLT4KICA8ZyBzdHJva2U9IiNFOEY0RkYiIHN0cm9rZS13aWR0aD0iNiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBmaWxsPSJub25lIj4KICAgIDxwYXRoIGQ9Ik01MCA1MnYyNCIvPgogICAgPHBhdGggZD0iTTYyIDUydjI0Ii8+CiAgICA8cGF0aCBkPSJNNDYgNjRoNCIvPgogICAgPHBhdGggZD0iTTYyIDY0aDQiLz4KICA8L2c+CiAgPCEtLSBvdXRwdXQgY29pbCAtLT4KICA8cmVjdCB4PSI3MCIgeT0iNTAiIHdpZHRoPSIxNiIgaGVpZ2h0PSIyOCIgcng9IjciIGZpbGw9Im5vbmUiIHN0cm9rZT0iI0ZGQjAyMCIgc3Ryb2tlLXdpZHRoPSI2Ii8+CiAgPCEtLSBzY2FuLWN5Y2xlIGFjY2VudCAtLT4KICA8Y2lyY2xlIGN4PSI0MCIgY3k9IjM0IiByPSI0IiBmaWxsPSIjNENDMkZGIiBvcGFjaXR5PSIwLjc1Ii8+CiAgPGNpcmNsZSBjeD0iNDAiIGN5PSI5NCIgcj0iNCIgZmlsbD0iIzRDQzJGRiIgb3BhY2l0eT0iMC4zNSIvPgo8L3N2Zz4K",
+      "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNTYgMjU2IiB3aWR0aD0iMjU2IiBoZWlnaHQ9IjI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlIj4KICA8dGl0bGUgaWQ9InRpdGxlIj5HWFdvcmtzIEFnZW50PC90aXRsZT4KICA8cmVjdCB3aWR0aD0iMjU2IiBoZWlnaHQ9IjI1NiIgZmlsbD0iIzAwMDAwMCIvPgogIDxnIGZpbGw9IiNmZmZmZmYiIHRyYW5zZm9ybT0idHJhbnNsYXRlKDI4LjE2IDI4LjE2KSBzY2FsZSgwLjc4KSI+CiAgICA8cGF0aCBkPSJNMTMgODlINjVWNTIuNUw5Ni41IDIxSDExMVYxOTFIODAuNUw2NSAxNzUuNVYxMjdIMTNaIi8+CiAgICA8cGF0aCBkPSJNMjQzIDE2N0gxOTFWMjAzLjVMMTU5LjUgMjM1SDE0NVY2NUgxNzUuNUwxOTEgODAuNVYxMjlIMjQzWiIvPgogIDwvZz4KPC9zdmc+Cg==",
       "author": "Arienax",
       "homepage": "https://github.com/Arienax/dsh-gxworks#readme",
       "repository": {
@@ -33,12 +33,12 @@
       },
       "versions": [
         {
-          "version": "0.2.0",
-          "publishTimestamp": 1793754220,
+          "version": "0.2.1",
+          "publishTimestamp": 1793788137,
           "source": {
             "type": "git",
             "url": "https://github.com/Arienax/dsh-gxworks",
-            "commit": "5cb23190ba4bc5d29fee6768984e21990c318595"
+            "commit": "1a7291f81170483f0509c37831a251c7e0c2dc84"
           },
           "engines": {
             "dsh": ">=0.2.0-0 <0.3.0"
