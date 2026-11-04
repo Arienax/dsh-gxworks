@@ -79,6 +79,7 @@ function contextText(packet) {
 }
 
 const manualFormat = '手册表格中的 rows 按 columns 顺序取值，每行继承 common，并补上 extra_fields_by_row 的同序号字段。'
+const directSelection = '优先用本 CPU 能直接表达工艺的成组操作。准备逐项复制逻辑时，先换一种状态表示和推进事件：可以由公共时基推进整组状态，也可按事件更新单项记录。两种用法在同一输入下比较，只写一两句决定性差异。只排除实际比较过的用法。不得靠自行限定容量或输入节拍使实现成立。只生成所选的一份程序。'
 const selection = '按同一组工艺条件比较至少两种整体实现。区分题目要求与实现假设，估算各自的步数增长、状态和资源。未规定的容量、精度、互斥或排队条件不能作为排除另一种算法的理由。当同一段逻辑随元素或通道重复时，比较逐项展开和利用本 CPU 成组操作的整体方案，说明数据怎样表示、怎样更新、并发与复位怎样保持。优先采用能直接表达工艺、减少重复且满足原始行为的型号指令。资料缺项说明对选择的影响。'
 
 // The Web wire uses short keys. Spell out the same fields in the provider's tool schema.
@@ -120,15 +121,18 @@ function wireLadder(value) {
   return value?.result?.program ? { ...value, result: { ...value.result, program: compact } } : compact
 }
 
-function submissionTool(tools, agent, ladderSchema, research) {
+function submissionTool(tools, agent, ladderSchema, research, direct) {
   const { families } = research
-  const review = tools.get('mcp__gxworks__create_program_candidate', agent).parameters.properties.implementation_review
+  const candidate = tools.get('mcp__gxworks__create_program_candidate', agent).parameters.properties
+  const review = candidate.implementation_review
+  const compact = Boolean(review.properties.reviewed_instructions)
+  const grouped = compact && direct && research.group_operations?.length
   const { selected, alternatives, limitations } = review.properties
   const groups = {}
   for (const [family, names] of Object.entries(families)) {
     for (const key of family === 'explicit' ? names : [family]) {
       const allowed = family === 'explicit' ? [key] : names
-      groups[key] = { type: 'object', required: ['instruction', 'tradeoff'], properties: {
+      groups[key] = compact ? { type: 'string', enum: allowed } : { type: 'object', required: ['instruction', 'tradeoff'], properties: {
         instruction: { type: 'string', enum: allowed }, tradeoff: { type: 'string', minLength: 1,
           description: 'Explain how this instruction fits or falls short in this project.' } } }
     }
@@ -137,19 +141,31 @@ function submissionTool(tools, agent, ladderSchema, research) {
   return { name: 'submit_ladder', description: '提交当前方案的选型与完整程序。按参数字段名填写，每条梯级的触点和输出只写可执行表达式。',
     parameters: { type: 'object', additionalProperties: false, required: ['implementation_review', 'ladder'],
       properties: { implementation_review: { type: 'object', additionalProperties: false,
-        required: ['selected', 'alternatives', ...(Object.keys(groups).length ? ['compared_families'] : []),
+        required: [...(grouped ? ['grouped_option'] : ['alternatives']), 'selected', ...(Object.keys(groups).length ? ['compared_families'] : []),
           ...(research.manual?.coverage?.status === 'incomplete' ? ['limitations'] : [])],
-        properties: { selected, alternatives, limitations, compared_families: comparisons } }, ladder: modelLadderSchema(ladderSchema) } } }
+        properties: { ...(grouped ? { grouped_option: { type: 'object', required: ['instruction', 'comparison'],
+          properties: { instruction: { type: 'string', enum: research.group_operations },
+            comparison: { type: 'string', maxLength: 320, description: '先说明用它存什么、由什么事件推进整组。若逐项展开更好，给出成组方案违反的原始要求或具体输入。' } } }
+        } : { alternatives: compact ? { ...alternatives, maxItems: 1,
+          description: 'Only one decisive alternative when the implementation repeats per element or channel; otherwise [].' } : alternatives }),
+          selected,
+          limitations, compared_families: comparisons } },
+        ...(candidate.io_example ? { io_example: candidate.io_example } : {}), ladder: modelLadderSchema(ladderSchema) } } }
 }
 
-function wireReview(value) {
-  const { selected, alternatives = [], compared_families = {} } = value
+function wireReview(value, compact) {
+  const { selected, alternatives = [], compared_families = {}, grouped_option } = value
   const limitations = value.limitations || (typeof compared_families.limitations === 'string' ? compared_families.limitations : undefined)
   const comparisons = Object.values(compared_families).filter(row => row && typeof row.instruction === 'string'
     && typeof row.tradeoff === 'string').map(row => ({ method: row.instruction, tradeoff: row.tradeoff }))
   const methods = alternatives.map(({ method, tradeoff, note }) => ({ method,
     tradeoff: note && typeof note === 'string' ? [tradeoff, note].filter(Boolean).join(' ') : tradeoff }))
-  return { selected, alternatives: [...methods, ...comparisons], ...(limitations ? { limitations } : {}) }
+  const names = Object.entries(compared_families).filter(([key]) => key !== 'limitations')
+    .map(([, row]) => typeof row === 'string' ? row : row?.instruction).filter(Boolean)
+  if (grouped_option?.instruction && grouped_option.comparison) methods.push({
+    method: grouped_option.instruction, tradeoff: grouped_option.comparison })
+  return { selected, alternatives: compact ? methods : [...methods, ...comparisons],
+    ...(compact ? { reviewed_instructions: [...new Set(names)] } : {}), ...(limitations ? { limitations } : {}) }
 }
 
 async function modelResponse(llm, exec, system, input, metrics, stage, submission) {
@@ -160,7 +176,8 @@ async function modelResponse(llm, exec, system, input, metrics, stage, submissio
   const calls = new Map()
   const task = stage === 'design'
     ? '当前只做规格设计。原始需求是下面资料中的 request 字段。根据型号和工艺比较有实质差异的方案；调用 submit_design_plan 提交草稿供用户选择。'
-    : '现在按证据选择可维护的实现并生成完整程序。下面 request 是工艺输入；请按 submit_ladder 的字段提交实际比较和 Web 格式的程序。'
+    : stage === 'repair' ? '按给出的反例和原始要求，只提交相关梯级的改动。'
+    : '现在按 request 生成一份程序。按 submit_ladder 的字段提交简短取舍和程序。'
   const messages = [{ role: 'user', content: [{ type: 'text', text: input }, { type: 'text', text: task }] }]
   for await (const chunk of llm.stream({ ...config, system, messages, ...(submission ? { tools: [submission] } : {}), sessionId: exec.agent.session.id, signal: exec.signal })) {
     if (chunk.type === 'text-delta') blocks.set(chunk.index, (blocks.get(chunk.index) || '') + chunk.text)
@@ -207,9 +224,14 @@ export function registerLadderGenerator(ctx, quotes) {
           callId: exec.callId + '-gx-' + (++calls), rootCallId: exec.rootCallId || exec.callId,
           parent: exec.token, signal: exec.signal, agent: exec.agent })
         for (const extra of result.additionalContexts || []) exec.deferContext(extra)
-        if (result.isError) throw Error(tool + '：' + result.error.message)
+        if (result.isError) {
+          const message = result.error.message
+          let detail
+          try { detail = JSON.parse(message).error } catch { /* A transport failure has no MCP envelope. */ }
+          throw Object.assign(Error(tool + '：' + message), { detail })
+        }
         const body = result.value.structuredContent || JSON.parse(result.value.content[0].text)
-        if (!body.ok) throw Error(tool + '：' + JSON.stringify(body.error))
+        if (!body.ok) throw Object.assign(Error(tool + '：' + JSON.stringify(body.error)), { detail: body.error })
         return body.data
       }
       const project = await invoke('get_current_project', {})
@@ -251,15 +273,17 @@ export function registerLadderGenerator(ctx, quotes) {
       const research = doc.instruction_research
       if (!research || (Object.keys(research.families).length && !research.manual)) throw Error('当前后端未随上下文交付相关手册。')
       const { output_schema, request, ...engineering } = doc.generation_input
-      const submit = submissionTool(tools, exec.agent, output_schema, research)
+      const submit = submissionTool(tools, exec.agent, output_schema, research, contextArgs.workflow === 'direct_generation')
+      const compactReview = Boolean(tools.get('mcp__gxworks__create_program_candidate', exec.agent).parameters.properties.implementation_review.properties.reviewed_instructions)
       const input = contextText({ ...engineering, instruction_research: research, request })
       const system = [
         '只调用 submit_ladder。其参数 schema 是本次唯一返回格式；以下 Web 程序协议仅定义该工具的 ladder 字段。',
         '<ladder_field>', doc.generation_instructions, '</ladder_field>', manualFormat,
-        contextArgs.workflow === 'detailed' ? '已确认的结构是实施输入。只比较在该结构内如何实现各功能，不再重选总体方案。' : selection,
-        '提交前按实际扫描顺序，用一组能区分实现优劣的输入走读将提交的网络。若程序依赖用户未声明的前提，修正实现或在 limitations 说明影响。',
+        contextArgs.workflow === 'detailed' ? '已确认的结构是实施输入。只比较在该结构内如何实现各功能，不再重选总体方案。' : directSelection,
+        ...(submit.parameters.properties.io_example ? ['需求若涉及并发、边沿或更新顺序且可从原文推出输出，提交一条能区分对错的 io_example。指定输入时刻，观察窗口内部的实际输出，期待值仅取自原题。简单映射可省略。'] : []),
         '工具中的 networks / shared_contacts / output_branches / series_contacts / outputs 分别承载 Web 的 r / c / b / i / o。所有网络没有标题字段。',
-        '先在 implementation_review 比较各功能组的代表指令和普通实现，写出名称、行为、资源代价及资料缺项。然后填写 ladder。c 和 i 都是触点表达式，说明文字只写在注释或决策中。',
+        compactReview ? 'compared_families 每组只填已查助记符。selected、alternatives、decisions、open_items 简洁不重复。' :
+          '在 implementation_review 为各组填写代表指令与简短取舍。',
       ].join('\n')
       const response = await modelResponse(llm, exec, system, input, metrics, 'generate', submit)
       const reply = response.value
@@ -273,23 +297,49 @@ export function registerLadderGenerator(ctx, quotes) {
       if (response.error) return recover(response.error, response.draft)
       if (!reply?.ladder || !reply.implementation_review) return recover('生成响应缺少 ladder 或 implementation_review。', reply)
       let implementation
-      try { implementation = wireReview(reply.implementation_review) }
+      try { implementation = wireReview(reply.implementation_review, compactReview) }
       catch (error) { return recover(String(error.message), reply) }
       const review = { ...implementation, context_document: id, manual_documents: [] }
       if (!review.limitations?.trim()) delete review.limitations
       let candidate, program
       try { program = wireLadder(reply.ladder) }
       catch (error) { return recover(String(error.message), reply) }
+      const example = reply.io_example || reply.implementation_review.io_example
+      const save = () => invoke('create_program_candidate', { ladder: program,
+        generation_context_id: doc.generation_context_id, implementation_review: review, ...(example ? { io_example: example } : {}) })
+      async function saveWithExample() {
+        try { return await save() } catch (error) {
+          if (error.detail?.code !== 'CANDIDATE_IO_MISMATCH' || exec.signal?.aborted) throw error
+          const body = program.result?.program || program
+          const { io_result: failure } = error.detail, indexes = failure.network_indexes
+          const networkSchema = (output_schema.properties?.result?.properties?.program || output_schema).properties?.r?.items
+          if (!networkSchema || !Array.isArray(body.r) || !indexes?.length || indexes.length > 16 || indexes.some(i => !body.r[i])) throw error
+          const replacements = { name: 'repair_networks', description: '替换列出的原始梯级。index 从 0 起算，网络使用原 c/b/i/o 字段。',
+            parameters: { type: 'object', required: ['edits'], properties: { edits: { type: 'array',
+              maxItems: indexes.length, items: { type: 'object', required: ['index', 'networks'], properties: {
+                index: { type: 'integer', enum: indexes }, networks: { type: 'array', items: networkSchema } } } } } } }
+          const patch = await modelResponse(llm, exec, '只调用 repair_networks。保留其他梯级和用例，按扫描顺序修正偏差。若期望与用户要求矛盾则返回空 edits。',
+            JSON.stringify({ plc_model: doc.plc_model, request, io_example: example, failure,
+              networks: indexes.map(index => ({ index, network: body.r[index] })) }), metrics, 'repair', replacements)
+          const edits = patch.value?.edits
+          if (!Array.isArray(edits) || !edits.length || !edits.every(e => e && indexes.includes(e.index) && Array.isArray(e.networks)) ||
+              new Set(edits.map(e => e.index)).size !== edits.length) throw error
+          const byIndex = new Map(edits.map(e => [e.index, e.networks]))
+          body.r = body.r.flatMap((row, i) => byIndex.get(i) || [row])
+          return save()
+        }
+      }
       try {
-        candidate = await invoke('create_program_candidate', { ladder: program,
-          generation_context_id: doc.generation_context_id, implementation_review: review })
+        candidate = await saveWithExample()
       } catch (error) {
         if (exec.signal?.aborted) throw error
         const state = await invoke('get_current_project', {})
         if (state.project_id !== args.project_id || state.version_count) return {
           status: 'inspect_saved_result', project_id: args.project_id, model_calls: metrics.length, metrics,
           error: String(error.message), next_actions: [{ tool: 'list_projects' }] }
-        return recover(String(error.message), { ladder: program, implementation_review: implementation })
+        if (error.detail?.code === 'CANDIDATE_IO_MISMATCH') return { status: 'io_mismatch', project_id: project.project_id,
+          io_example: example, io_result: error.detail.io_result, draft: program, model_calls: metrics.length, metrics, next_actions: [] }
+        return recover(String(error.message), { ladder: program, implementation_review: implementation, ...(example ? { io_example: example } : {}) })
       }
       return { project_id: project.project_id, workflow: doc.workflow_mode, model_calls: metrics.length, metrics,
         context_pages: pages, implementation_review: implementation, candidate,

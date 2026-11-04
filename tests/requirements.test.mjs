@@ -146,3 +146,67 @@ test('Direct reads all pages and sends one typed submission on the selected mode
       { method: 'MOV', tradeoff: 'One per word. Separate writes.' }, { method: 'BMOV', tradeoff: 'Copies a contiguous range.' }],
     limitations: 'Check the available range.', manual_documents: [], context_document: 'manual-context' } })
 })
+
+for (const fixed of [true, false]) test('An I/O mismatch gets one scoped repair; resolved=' + fixed, async () => {
+  const raw = 'A request should light only its assigned lamp.', calls = [], submissions = []
+  const first = { c: [], b: [{ i: [], o: ['COIL Y0'] }] }
+  const next = { c: ['NO X0'], b: [{ i: [], o: ['COIL Y1'] }] }
+  const example = { scan_ms: 5, steps: [{ at_ms: 0, set: { X0: 0 } }, { at_ms: 5, expect: { Y1: 0 } }] }
+  const ioResult = { status: 'mismatch', address: 'Y1', at_ms: 5, expected: 0, actual: true, network_indexes: [1] }
+  const props = { implementation_review: { properties: { selected: {}, alternatives: {}, limitations: {}, reviewed_instructions: {} } }, io_example: {} }
+  let reads = 0
+  const tools = { register(d) { this.generator = d }, get() { return { parameters: { properties: props } } },
+    async execute({ name, arguments: args }) {
+      let data
+      if (name.endsWith('get_current_project')) data = { project_id: 'p', target_mode: 'ladder', version_count: 0 }
+      else if (name.endsWith('get_generation_context')) {
+        reads++
+        data = { delivery: { document_id: 'doc', page: 0, complete: true }, document: { project_id: 'p', plc_model: 'FX3U',
+          generation_context_id: 'same', generation_input: { request: raw, output_schema: { properties: { r: { items: { type: 'object' } } } } },
+          output_contract: { protocol: 'compact_ladder/1.3', tool: 'create_program_candidate' },
+          instruction_research: { families: { copy: ['BMOV'] }, ...(fixed ? { group_operations: ['BMOV'] } : {}),
+            manual: { knowledge: ['original manual content'] } } } }
+      } else {
+        assert(name.endsWith('create_program_candidate')); submissions.push(structuredClone(args))
+        if (submissions.length === 1 || !fixed) {
+          const failure = { ok: false, error: { code: 'CANDIDATE_IO_MISMATCH', io_result: ioResult } }
+          return fixed ? { isError: true, error: { message: JSON.stringify(failure) } } : { value: { structuredContent: failure } }
+        }
+        data = { io_example_result: { status: 'passed_in_example' } }
+      }
+      return { value: { structuredContent: { ok: true, data } } }
+    } }
+  const llm = { async *stream(options) {
+    const tool = options.tools[0], input = JSON.parse(options.messages[0].content[0].text)
+    calls.push(tool.name)
+    let value
+    if (tool.name === 'submit_ladder') {
+      assert.deepEqual(tool.parameters.properties.implementation_review.properties.compared_families.properties.copy, { type: 'string', enum: ['BMOV'] })
+      const fields = tool.parameters.properties.implementation_review
+      assert.equal(fields.required.includes('grouped_option'), fixed)
+      if (fixed) assert.deepEqual(Object.keys(fields.properties).slice(0, 2), ['grouped_option', 'selected'])
+      value = { implementation_review: { selected: 'Two outputs',
+        ...(fixed ? { grouped_option: { instruction: 'BMOV', comparison: 'One contiguous transfer.' } } : { alternatives: [] }),
+        compared_families: { copy: 'BMOV' } },
+        ladder: { r: [first, first] }, io_example: example }
+    } else {
+      assert.deepEqual(input.networks, [{ index: 1, network: first }])
+      assert.equal(input.instruction_research, undefined)
+      assert.deepEqual(input.io_example, example)
+      value = { edits: [{ index: 1, networks: [next] }] }
+    }
+    yield { type: 'block-end', index: 0, block: { type: 'tool-call', name: tool.name, arguments: JSON.stringify(value) } }
+    yield { type: 'finish', reason: { kind: 'tool-calls' } }
+  } }
+  apply({ on() {}, get: name => ({ tools, llm })[name] })
+  const session = { snapshotEvents: () => [message(raw)], requestHeader: () => ({ config: { model: 'test', provider: 'test' } }) }
+  const result = await tools.generator.execute({ project_id: 'p' }, { agent: { session }, signal: new AbortController().signal })
+  assert.equal(reads, 1)
+  assert.deepEqual(calls, ['submit_ladder', 'repair_networks'])
+  assert.equal(submissions.length, 2)
+  assert.deepEqual(submissions[1], { ...submissions[0], ladder: { r: [first, next] } })
+  assert.deepEqual(submissions[0].implementation_review.reviewed_instructions, ['BMOV'])
+  if (fixed) assert.deepEqual(submissions[0].implementation_review.alternatives,
+    [{ method: 'BMOV', tradeoff: 'One contiguous transfer.' }])
+  assert.equal(fixed ? result.candidate.io_example_result.status : result.status, fixed ? 'passed_in_example' : 'io_mismatch')
+})
