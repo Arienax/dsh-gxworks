@@ -22,3 +22,23 @@ normal data directories and are not stored in this cache or the plugin directory
 To update, obtain the complete MCP ZIP for the selected upstream commit, update
 `backend.json`, sync the skill from the matching public source checkout, run
 `npm run check`, pack, and run `npm run check-install -- <unpacked-package>`.
+
+## Independent I/O cases
+
+Set `GXWORKS_ACCEPTANCE_CASES_FILE` in the environment of the MCP backend to a local JSON file you control. Use the actual ID returned by `create_project` and the project's CPU. The backend reads the file when a Ladder candidate is submitted. The cases are kept out of the generation request.
+
+```json
+{
+  "schema_version": 1,
+  "project_id": "replace-with-project-id",
+  "plc_model": "FX3U",
+  "cases": [{"case_id": "lamp", "scan_ms": 10, "steps": [
+    {"at_ms": 0, "set": {"X0": 0}, "expect": {"Y0": 0}},
+    {"at_ms": 10, "set": {"X0": 1}, "expect": {"Y0": 1}}
+  ]}]
+}
+```
+
+`behavior_result` keeps the first definite mismatch and other distinct output failures observed in the same input sequence. A repair request carries the shared inputs once and includes the affected submitted networks. Confirmed machine-readable behavior conditions can also supply checks. A model-proposed `io_example` has its own `io_example_result`.
+
+The operator's cases share up to 24 seconds of local replay. If the time allowance expires, the result includes the last simulated time reached for that case. Replay uses the specified scan interval. Use Simulator2 to check the delivered project's actual timing.

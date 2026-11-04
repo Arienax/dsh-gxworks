@@ -18,7 +18,7 @@ dsh plugin --profile web add dsh-gxworks
 
 安装后可以在同一 profile 的对话中试试这些指令。
 
-新建程序默认先走 Design，选定方案后按规格生成。说“直接生成”即可走 Direct。新建 Ladder 时，Desktop 读取当前 CPU 的本地指令资料，一次生成一份程序。对于并发或时序要求，可附一条 I/O 用例在本地回放。发现明确的输出偏差时，最多追加一次相关梯级修正。
+新建程序默认先走 Design，选定方案后按规格生成。说“直接生成”即可走 Direct。新建 Ladder 时，Desktop 按 CPU 查手册，在适用的梯级复用移位或搬运片段，一次生成一份程序。后端按已确认的行为条件或独立 I/O 用例回放，只在发现明确反例时追加一次局部修正。结果会单列尚未验证的行为。[独立用例格式](runtime/README.md#independent-io-cases)
 
 - “列出我的 PLC 工程。”—— 调用 `mcp__gxworks__list_projects`，也可用来确认插件已连接。
 - “GX Works2 安装在哪里？有打开的工程吗？”—— `mcp__gxworks__list_gxworks2_sessions` 返回后端检测到的可执行文件路径，并单独列出窗口与工程状态。

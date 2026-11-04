@@ -1,6 +1,6 @@
 /** Deploy the complete, bundled MCP release locally. No downloads or Python setup. */
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -74,7 +74,13 @@ export function prepareBundledRuntime({ env = process.env, platform = process.pl
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+// Desktop may start the file through a profile junction while ESM resolved the package target.
+export function isLaunchEntry(moduleUrl, script = process.argv[1]) {
+  return Boolean(script && (pathToFileURL(resolve(script)).href === moduleUrl ||
+    (existsSync(script) && pathToFileURL(realpathSync(script)).href === moduleUrl)))
+}
+
+if (isLaunchEntry(import.meta.url)) {
   try {
     process.stdout.write(`${prepareBundledRuntime()}\n`)
   } catch (error) {

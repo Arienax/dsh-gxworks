@@ -1,9 +1,21 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { backend, bundledArchive, bundledRuntimeRoot, packageRoot, prepareBundledRuntime, runtimeReady } from '../launch/bundled-runtime.mjs'
+
+test('the launcher starts through a linked Desktop installation', t => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-profile-entry-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const installed = join(root, 'plugin')
+  symlinkSync(packageRoot, installed, process.platform === 'win32' ? 'junction' : 'dir')
+  writeFileSync(join(root, 'GXWorks-Agent-MCP.exe'), '')
+  const output = execFileSync(process.execPath,
+    [join(installed, 'launch', 'mcp-launch.mjs'), '--print-plan', '--agent-root', root], { encoding: 'utf8' })
+  assert.equal(JSON.parse(output).printPlan, true)
+})
 
 test('the npm file list ships the backend archive and its deployment module', () => {
   const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'))

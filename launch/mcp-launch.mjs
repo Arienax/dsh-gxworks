@@ -18,8 +18,7 @@ import { spawn } from 'node:child_process'
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
-import { backend, bundledArchive, bundledRuntimeRoot, prepareBundledRuntime, runtimeReady } from './bundled-runtime.mjs'
+import { backend, bundledArchive, bundledRuntimeRoot, isLaunchEntry, prepareBundledRuntime, runtimeReady } from './bundled-runtime.mjs'
 
 /** Frozen product launcher shipped by the GXWorks Agent MCP release package. */
 export const FROZEN_LAUNCHER = 'GXWorks-Agent-MCP.exe'
@@ -397,7 +396,4 @@ function run() {
   })
 }
 
-const invokedDirectly =
-  process.argv[1] !== undefined && import.meta.url === pathToFileURL(resolve(process.argv[1])).href
-
-if (invokedDirectly) run()
+if (isLaunchEntry(import.meta.url)) run()

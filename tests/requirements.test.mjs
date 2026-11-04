@@ -85,7 +85,7 @@ test('new Ladder routes to one Desktop generator and preserves the selected mode
   }
 })
 
-test('Direct reads all pages and sends one typed submission on the selected model route', async () => {
+for (const degraded of [false, true]) test('Direct reads all pages and reports the delivered format; degraded=' + degraded, async () => {
   const raw = 'Copy the input buffer to the output buffer.', scope = { type: 'object', required: ['r'], properties: { r: { type: 'array' } } }
   const ladder = { r: [{ c: [], b: [{ i: [], o: ['BMOV D0 D10 K4'] }] }], device_comments: [] }
   const review = { selected: 'BMOV copies the whole block.', alternatives: [{ method: 'MOV', tradeoff: 'One per word.' }] }
@@ -109,7 +109,11 @@ test('Direct reads all pages and sends one typed submission on the selected mode
         data = { document: { $ref: '#/objects/doc' }, objects: page === 1 ? { doc } : {}, delivery: {
           page, document_id: 'manual-context', complete: page === 1, next: page === 1 ? null : {
             tool: 'get_generation_context', arguments: { cursor: 'next' } } } }
-      } else { assert(name.endsWith('create_program_candidate')); saved = args; data = { candidate_id: 'example' } }
+      } else {
+        assert(name.endsWith('create_program_candidate')); saved = args
+        data = { candidate_id: 'example', version_id: 'v0001', delivery: { preferred_format: 'gxw',
+          actual_format: degraded ? 'csv' : 'gxw', degraded, reason: degraded ? 'project readback mismatch' : null } }
+      }
       return { isError: false, value: { structuredContent: { ok: true, data } } }
     },
   }
@@ -141,19 +145,29 @@ test('Direct reads all pages and sends one typed submission on the selected mode
   const result = await tools.generator.execute({ project_id: 'p' }, { agent: { session }, signal: new AbortController().signal, callId: 'test' })
   assert.equal(generations, 1)
   assert.equal(result.model_calls, 1)
+  assert.equal(result.status, degraded ? 'delivery_degraded' : undefined)
+  if (degraded) assert.deepEqual(result.delivery, result.candidate.delivery)
   assert.deepEqual(saved, { ladder, generation_context_id: 'receipt', implementation_review: {
     selected: review.selected, alternatives: [
       { method: 'MOV', tradeoff: 'One per word. Separate writes.' }, { method: 'BMOV', tradeoff: 'Copies a contiguous range.' }],
     limitations: 'Check the available range.', manual_documents: [], context_document: 'manual-context' } })
 })
 
-for (const fixed of [true, false]) test('An I/O mismatch gets one scoped repair; resolved=' + fixed, async () => {
+for (const fixed of [true, false]) test('An independent counterexample gets one scoped repair; resolved=' + fixed, async () => {
   const raw = 'A request should light only its assigned lamp.', calls = [], submissions = []
   const first = { c: [], b: [{ i: [], o: ['COIL Y0'] }] }
   const next = { c: ['NO X0'], b: [{ i: [], o: ['COIL Y1'] }] }
-  const example = { scan_ms: 5, steps: [{ at_ms: 0, set: { X0: 0 } }, { at_ms: 5, expect: { Y1: 0 } }] }
-  const ioResult = { status: 'mismatch', address: 'Y1', at_ms: 5, expected: 0, actual: true, network_indexes: [1] }
-  const props = { implementation_review: { properties: { selected: {}, alternatives: {}, limitations: {}, reviewed_instructions: {} } }, io_example: {} }
+  const inputSequence = [{ at_ms: 0, set: { X0: 0 } }]
+  const caseInputs = [...inputSequence, { at_ms: 15, set: { X0: 1 } }]
+  const original = Array(fixed ? 18 : 2).fill(first)
+  const scope = fixed ? original.map((_, index) => index) : [1]
+  const ioResult = { status: 'mismatch', case_id: 'lamp', address: 'Y1', at_ms: 5, scan_ms: 5, expected: 0, actual: true,
+    input_sequence: inputSequence, network_indexes: scope }
+  if (fixed) Object.assign(ioResult, { case_input_sequence: caseInputs, counterexamples: [
+    { at_ms: 5, address: 'Y1', expected: 0, actual: true, network_indexes: [1] },
+    { at_ms: 20, address: 'Y2', expected: 1, actual: false, network_indexes: scope.slice(2) },
+  ] })
+  const props = { implementation_review: { properties: { selected: {}, alternatives: {}, limitations: {}, reviewed_instructions: {}, assumptions: { type: 'array' } } }, io_example: {} }
   let reads = 0
   const tools = { register(d) { this.generator = d }, get() { return { parameters: { properties: props } } },
     async execute({ name, arguments: args }) {
@@ -164,15 +178,15 @@ for (const fixed of [true, false]) test('An I/O mismatch gets one scoped repair;
         data = { delivery: { document_id: 'doc', page: 0, complete: true }, document: { project_id: 'p', plc_model: 'FX3U',
           generation_context_id: 'same', generation_input: { request: raw, output_schema: { properties: { r: { items: { type: 'object' } } } } },
           output_contract: { protocol: 'compact_ladder/1.3', tool: 'create_program_candidate' },
-          instruction_research: { families: { copy: ['BMOV'] }, ...(fixed ? { group_operations: ['BMOV'] } : {}),
+          instruction_research: { families: { copy: ['BMOV'] }, ...(fixed ? { group_operations: ['BMOV'], executable_fragments: [{ id: 'range-bmov', syntax: 'FRAG range-bmov <S> <D> <N>' }] } : {}),
             manual: { knowledge: ['original manual content'] } } } }
       } else {
         assert(name.endsWith('create_program_candidate')); submissions.push(structuredClone(args))
         if (submissions.length === 1 || !fixed) {
-          const failure = { ok: false, error: { code: 'CANDIDATE_IO_MISMATCH', io_result: ioResult } }
+          const failure = { ok: false, error: { code: 'CANDIDATE_BEHAVIOR_MISMATCH', behavior_result: ioResult } }
           return fixed ? { isError: true, error: { message: JSON.stringify(failure) } } : { value: { structuredContent: failure } }
         }
-        data = { io_example_result: { status: 'passed_in_example' } }
+        data = { behavior_result: { status: 'passed_in_cases' } }
       }
       return { value: { structuredContent: { ok: true, data } } }
     } }
@@ -184,15 +198,20 @@ for (const fixed of [true, false]) test('An I/O mismatch gets one scoped repair;
       assert.deepEqual(tool.parameters.properties.implementation_review.properties.compared_families.properties.copy, { type: 'string', enum: ['BMOV'] })
       const fields = tool.parameters.properties.implementation_review
       assert.equal(fields.required.includes('grouped_option'), fixed)
-      if (fixed) assert.deepEqual(Object.keys(fields.properties).slice(0, 2), ['grouped_option', 'selected'])
+      assert.equal(fields.required.includes('assumptions'), fixed)
+      assert.equal(tool.parameters.properties.io_example, undefined)
+      assert.equal(input.executable_fragments?.[0].id, fixed ? 'range-bmov' : undefined)
       value = { implementation_review: { selected: 'Two outputs',
-        ...(fixed ? { grouped_option: { instruction: 'BMOV', comparison: 'One contiguous transfer.' } } : { alternatives: [] }),
+        ...(fixed ? { grouped_option: { instruction: 'BMOV', comparison: 'One contiguous transfer.' }, assumptions: [] } : { alternatives: [] }),
         compared_families: { copy: 'BMOV' } },
-        ladder: { r: [first, first] }, io_example: example }
+        ladder: { r: original } }
     } else {
-      assert.deepEqual(input.networks, [{ index: 1, network: first }])
+      assert.deepEqual(input.networks, scope.map(index => ({ index, network: first })))
       assert.equal(input.instruction_research, undefined)
-      assert.deepEqual(input.io_example, example)
+      assert.deepEqual(input.counterexample.inputs, fixed ? caseInputs : inputSequence)
+      assert.deepEqual(input.counterexamples, ioResult.counterexamples)
+      assert.equal(input.counterexample.scan_ms, 5)
+      assert.equal(input.case_id, 'lamp')
       value = { edits: [{ index: 1, networks: [next] }] }
     }
     yield { type: 'block-end', index: 0, block: { type: 'tool-call', name: tool.name, arguments: JSON.stringify(value) } }
@@ -204,9 +223,9 @@ for (const fixed of [true, false]) test('An I/O mismatch gets one scoped repair;
   assert.equal(reads, 1)
   assert.deepEqual(calls, ['submit_ladder', 'repair_networks'])
   assert.equal(submissions.length, 2)
-  assert.deepEqual(submissions[1], { ...submissions[0], ladder: { r: [first, next] } })
+  assert.deepEqual(submissions[1], { ...submissions[0], ladder: { r: original.map((row, index) => index === 1 ? next : row) } })
   assert.deepEqual(submissions[0].implementation_review.reviewed_instructions, ['BMOV'])
   if (fixed) assert.deepEqual(submissions[0].implementation_review.alternatives,
     [{ method: 'BMOV', tradeoff: 'One contiguous transfer.' }])
-  assert.equal(fixed ? result.candidate.io_example_result.status : result.status, fixed ? 'passed_in_example' : 'io_mismatch')
+  assert.equal(fixed ? result.candidate.behavior_result.status : result.status, fixed ? 'passed_in_cases' : 'behavior_mismatch')
 })

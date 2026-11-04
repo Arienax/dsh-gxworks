@@ -58,6 +58,19 @@ function manualTable(items) {
   return JSON.stringify(table).length < JSON.stringify(items).length ? table : items
 }
 
+// Several manual aspects often have exactly the same answer and missing dependencies.
+function coverageAspects(items) {
+  if (!items.length || !items.every(row => typeof row?.aspect === 'string')) return items
+  const groups = new Map()
+  for (const { aspect, ...result } of items) {
+    const key = JSON.stringify(result)
+    if (!groups.has(key)) groups.set(key, { ...result, aspects: [] })
+    groups.get(key).aspects.push(aspect)
+  }
+  const grouped = { by_result: [...groups.values()] }
+  return JSON.stringify(grouped).length < JSON.stringify(items).length ? grouped : items
+}
+
 // Use Web's context-reference convention to send repeated scopes and contracts once.
 function contextText(packet) {
   const seen = new Map()
@@ -68,7 +81,9 @@ function contextText(packet) {
       if (seen.has(text)) return { $ref: seen.get(text), $context_reference: true }
       seen.set(text, path)
     }
-    if (Array.isArray(value) && (key === 'facts' || key === 'aspects') && path.startsWith('#/instruction_research/manual/')) {
+    if (Array.isArray(value) && key === 'aspects' && path.includes('/coverage/')) {
+      value = coverageAspects(value)
+    } else if (Array.isArray(value) && (key === 'facts' || key === 'aspects') && path.startsWith('#/instruction_research/manual/')) {
       value = manualTable(value)
     }
     if (Array.isArray(value)) return value.map((item, i) => pack(item, path + '/' + i))
@@ -78,7 +93,7 @@ function contextText(packet) {
   return JSON.stringify(pack(packet, '#'))
 }
 
-const manualFormat = '手册表格中的 rows 按 columns 顺序取值，每行继承 common，并补上 extra_fields_by_row 的同序号字段。'
+const manualFormat = '手册 rows 按 columns 取值并继承 common、同序号 extra_fields_by_row；by_result 中所列 aspects 共享该项的结论和缺项。'
 const directSelection = '优先用本 CPU 能直接表达工艺的成组操作。准备逐项复制逻辑时，先换一种状态表示和推进事件：可以由公共时基推进整组状态，也可按事件更新单项记录。两种用法在同一输入下比较，只写一两句决定性差异。只排除实际比较过的用法。不得靠自行限定容量或输入节拍使实现成立。只生成所选的一份程序。'
 const selection = '按同一组工艺条件比较至少两种整体实现。区分题目要求与实现假设，估算各自的步数增长、状态和资源。未规定的容量、精度、互斥或排队条件不能作为排除另一种算法的理由。当同一段逻辑随元素或通道重复时，比较逐项展开和利用本 CPU 成组操作的整体方案，说明数据怎样表示、怎样更新、并发与复位怎样保持。优先采用能直接表达工艺、减少重复且满足原始行为的型号指令。资料缺项说明对选择的影响。'
 
@@ -87,7 +102,7 @@ const ladderFields = { r: 'networks', c: 'shared_contacts', b: 'output_branches'
 const fieldHelp = {
   shared_contacts: 'Executable contacts shared by every branch. Use [] or strings such as NO X0, NC M0, >= D0 K1. Never put a title here.',
   series_contacts: 'Additional contacts in series. Use NO, NC, P, F and an address, or a prefix comparison. For parallel paths use {"or":[["NO X0"],["NO M0"]]}.',
-  outputs: 'Coils use COIL Y0. Timers use TIMER T0 K10. Applications use an actual opcode and space-separated operands. Each entry is one executable instruction.',
+  outputs: 'Coils use COIL Y0. Timers use TIMER T0 K10. Applications use a supported opcode or one delivered FRAG call with positional operands. Each entry is one executable instruction.',
 }
 
 function modelLadderSchema(node) {
@@ -127,6 +142,7 @@ function submissionTool(tools, agent, ladderSchema, research, direct) {
   const review = candidate.implementation_review
   const compact = Boolean(review.properties.reviewed_instructions)
   const grouped = compact && direct && research.group_operations?.length
+  const fragments = direct && Boolean(research.executable_fragments?.length)
   const { selected, alternatives, limitations } = review.properties
   const groups = {}
   for (const [family, names] of Object.entries(families)) {
@@ -141,16 +157,18 @@ function submissionTool(tools, agent, ladderSchema, research, direct) {
   return { name: 'submit_ladder', description: '提交当前方案的选型与完整程序。按参数字段名填写，每条梯级的触点和输出只写可执行表达式。',
     parameters: { type: 'object', additionalProperties: false, required: ['implementation_review', 'ladder'],
       properties: { implementation_review: { type: 'object', additionalProperties: false,
-        required: [...(grouped ? ['grouped_option'] : ['alternatives']), 'selected', ...(Object.keys(groups).length ? ['compared_families'] : []),
+        required: [...(grouped ? ['grouped_option'] : ['alternatives']), 'selected', ...(fragments ? ['assumptions'] : []), ...(Object.keys(groups).length ? ['compared_families'] : []),
           ...(research.manual?.coverage?.status === 'incomplete' ? ['limitations'] : [])],
         properties: { ...(grouped ? { grouped_option: { type: 'object', required: ['instruction', 'comparison'],
           properties: { instruction: { type: 'string', enum: research.group_operations },
-            comparison: { type: 'string', maxLength: 320, description: '先说明用它存什么、由什么事件推进整组。若逐项展开更好，给出成组方案违反的原始要求或具体输入。' } } }
+            comparison: { type: 'string', maxLength: 320, description: fragments ?
+              '比较可执行片段的完整行为和另一种实现。若排除片段，给出它在相同输入、分辨率、并发条件下无法完成的可观察输出。' :
+              '先说明用它存什么、由什么事件推进整组。若逐项展开更好，给出成组方案违反的原始要求或具体输入。' } } }
         } : { alternatives: compact ? { ...alternatives, maxItems: 1,
           description: 'Only one decisive alternative when the implementation repeats per element or channel; otherwise [].' } : alternatives }),
           selected,
-          limitations, compared_families: comparisons } },
-        ...(candidate.io_example ? { io_example: candidate.io_example } : {}), ladder: modelLadderSchema(ladderSchema) } } }
+          ...(fragments ? { assumptions: review.properties.assumptions } : {}), limitations, compared_families: comparisons } },
+        ...(candidate.io_example && !review.properties.assumptions ? { io_example: candidate.io_example } : {}), ladder: modelLadderSchema(ladderSchema) } } }
 }
 
 function wireReview(value, compact) {
@@ -165,6 +183,7 @@ function wireReview(value, compact) {
   if (grouped_option?.instruction && grouped_option.comparison) methods.push({
     method: grouped_option.instruction, tradeoff: grouped_option.comparison })
   return { selected, alternatives: compact ? methods : [...methods, ...comparisons],
+    ...(value.assumptions ? { assumptions: value.assumptions } : {}),
     ...(compact ? { reviewed_instructions: [...new Set(names)] } : {}), ...(limitations ? { limitations } : {}) }
 }
 
@@ -275,12 +294,14 @@ export function registerLadderGenerator(ctx, quotes) {
       const { output_schema, request, ...engineering } = doc.generation_input
       const submit = submissionTool(tools, exec.agent, output_schema, research, contextArgs.workflow === 'direct_generation')
       const compactReview = Boolean(tools.get('mcp__gxworks__create_program_candidate', exec.agent).parameters.properties.implementation_review.properties.reviewed_instructions)
-      const input = contextText({ ...engineering, instruction_research: research, request })
+      const { executable_fragments: fragments, ...references } = research
+      const input = contextText({ request, ...(fragments?.length ? { executable_fragments: fragments } : {}),
+        ...engineering, instruction_research: references })
       const system = [
         '只调用 submit_ladder。其参数 schema 是本次唯一返回格式；以下 Web 程序协议仅定义该工具的 ladder 字段。',
         '<ladder_field>', doc.generation_instructions, '</ladder_field>', manualFormat,
-        contextArgs.workflow === 'detailed' ? '已确认的结构是实施输入。只比较在该结构内如何实现各功能，不再重选总体方案。' : directSelection,
-        ...(submit.parameters.properties.io_example ? ['需求若涉及并发、边沿或更新顺序且可从原文推出输出，提交一条能区分对错的 io_example。指定输入时刻，观察窗口内部的实际输出，期待值仅取自原题。简单映射可省略。'] : []),
+        contextArgs.workflow === 'detailed' ? '按已确认的方案实施。' : fragments?.length ?
+          '优先复用能完成工艺的 executable_fragments。按片段示例比较输入、采样精度、状态范围和并发行为。适用时在对应梯级按 syntax 填 FRAG 和实参。按相同约束比较漏接事件、来料间距和容差。定时从规格所述事件起算。按可观察的节拍推进，计数可能跨步时按实际经过时间处理。内部容量和节拍填 assumptions，用户条件必须逐字引用。' : directSelection,
         '工具中的 networks / shared_contacts / output_branches / series_contacts / outputs 分别承载 Web 的 r / c / b / i / o。所有网络没有标题字段。',
         compactReview ? 'compared_families 每组只填已查助记符。selected、alternatives、decisions、open_items 简洁不重复。' :
           '在 implementation_review 为各组填写代表指令与简短取舍。',
@@ -307,20 +328,37 @@ export function registerLadderGenerator(ctx, quotes) {
       const example = reply.io_example || reply.implementation_review.io_example
       const save = () => invoke('create_program_candidate', { ladder: program,
         generation_context_id: doc.generation_context_id, implementation_review: review, ...(example ? { io_example: example } : {}) })
-      async function saveWithExample() {
+      async function saveWithBehaviorCheck() {
         try { return await save() } catch (error) {
-          if (error.detail?.code !== 'CANDIDATE_IO_MISMATCH' || exec.signal?.aborted) throw error
+          if (error.detail?.code !== 'CANDIDATE_BEHAVIOR_MISMATCH' || exec.signal?.aborted) throw error
           const body = program.result?.program || program
-          const { io_result: failure } = error.detail, indexes = failure.network_indexes
+          const failure = error.detail.behavior_result
           const networkSchema = (output_schema.properties?.result?.properties?.program || output_schema).properties?.r?.items
-          if (!networkSchema || !Array.isArray(body.r) || !indexes?.length || indexes.length > 16 || indexes.some(i => !body.r[i])) throw error
+          if (!networkSchema || !Array.isArray(body.r) || !failure) throw error
+          const witnesses = failure.counterexamples || []
+          let indexes, networks
+          for (const scope of [failure.network_indexes, witnesses[0]?.network_indexes]) {
+            if (!Array.isArray(scope) || !scope.length || scope.length > 32 ||
+                scope.some(i => !Number.isInteger(i) || !body.r[i])) continue
+            const rows = scope.map(index => ({ index, network: body.r[index] }))
+            if (Buffer.byteLength(JSON.stringify(rows)) > 24 * 1024) continue
+            indexes = scope
+            networks = rows
+            break
+          }
+          if (!networks) throw error
           const replacements = { name: 'repair_networks', description: '替换列出的原始梯级。index 从 0 起算，网络使用原 c/b/i/o 字段。',
             parameters: { type: 'object', required: ['edits'], properties: { edits: { type: 'array',
               maxItems: indexes.length, items: { type: 'object', required: ['index', 'networks'], properties: {
                 index: { type: 'integer', enum: indexes }, networks: { type: 'array', items: networkSchema } } } } } } }
-          const patch = await modelResponse(llm, exec, '只调用 repair_networks。保留其他梯级和用例，按扫描顺序修正偏差。若期望与用户要求矛盾则返回空 edits。',
-            JSON.stringify({ plc_model: doc.plc_model, request, io_example: example, failure,
-              networks: indexes.map(index => ({ index, network: body.r[index] })) }), metrics, 'repair', replacements)
+          const patch = await modelResponse(llm, exec, '只调用 repair_networks。检查共享时基或状态对所列各输出的影响，一次处理可证实的偏差。保留其余梯级和用例。若期望与用户要求矛盾则返回空 edits。',
+            JSON.stringify({ plc_model: doc.plc_model, request, case_id: failure.case_id,
+              counterexample: { at_ms: failure.at_ms, scan_ms: failure.scan_ms, scan: failure.scan, address: failure.address,
+                expected: failure.expected, actual: failure.actual, inputs: failure.case_input_sequence || failure.input_sequence || failure.witness?.input_sequence },
+              ...(witnesses.length > 1 ? { counterexamples: witnesses.map(({ at_ms, address, expected, actual, network_indexes }) =>
+                ({ at_ms, address, expected, actual, network_indexes })) } : {}),
+              ...(fragments?.length ? { fragment_syntax: fragments.map(f => f.syntax) } : {}),
+              networks }), metrics, 'repair', replacements)
           const edits = patch.value?.edits
           if (!Array.isArray(edits) || !edits.length || !edits.every(e => e && indexes.includes(e.index) && Array.isArray(e.networks)) ||
               new Set(edits.map(e => e.index)).size !== edits.length) throw error
@@ -330,21 +368,24 @@ export function registerLadderGenerator(ctx, quotes) {
         }
       }
       try {
-        candidate = await saveWithExample()
+        candidate = await saveWithBehaviorCheck()
       } catch (error) {
         if (exec.signal?.aborted) throw error
         const state = await invoke('get_current_project', {})
         if (state.project_id !== args.project_id || state.version_count) return {
           status: 'inspect_saved_result', project_id: args.project_id, model_calls: metrics.length, metrics,
           error: String(error.message), next_actions: [{ tool: 'list_projects' }] }
-        if (error.detail?.code === 'CANDIDATE_IO_MISMATCH') return { status: 'io_mismatch', project_id: project.project_id,
-          io_example: example, io_result: error.detail.io_result, draft: program, model_calls: metrics.length, metrics, next_actions: [] }
+        if (error.detail?.code === 'CANDIDATE_BEHAVIOR_MISMATCH') return { status: 'behavior_mismatch', project_id: project.project_id,
+          behavior_result: error.detail.behavior_result, draft: program, model_calls: metrics.length, metrics, next_actions: [] }
         return recover(String(error.message), { ladder: program, implementation_review: implementation, ...(example ? { io_example: example } : {}) })
       }
-      return { project_id: project.project_id, workflow: doc.workflow_mode, model_calls: metrics.length, metrics,
-        context_pages: pages, implementation_review: implementation, candidate,
-        ...(candidate.save_result?.status === 'saved_native_diagnostic' ? { status: 'native_validation_failed',
-          version_id: candidate.version_id, diagnostics: candidate.validation } : {}) }
+      const result = { project_id: project.project_id, workflow: doc.workflow_mode, model_calls: metrics.length, metrics,
+        context_pages: pages, implementation_review: implementation, candidate }
+      if (candidate.save_result?.status === 'saved_native_diagnostic') return { ...result, status: 'native_validation_failed',
+        version_id: candidate.version_id, diagnostics: candidate.validation }
+      if (candidate.delivery?.degraded) return { ...result, status: 'delivery_degraded',
+        version_id: candidate.version_id, delivery: candidate.delivery }
+      return result
     },
   })
 }
