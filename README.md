@@ -18,7 +18,7 @@ dsh plugin --profile web add dsh-gxworks
 
 安装后可以在同一 profile 的对话中试试这些指令。
 
-新建程序默认先走 Design。模型根据工程型号和需求给出方案，你可以选择一个或要求修改。确认后才按选定规格生成，也可以在需求里明确要求直接生成。
+新建程序默认先走 Design。模型根据工程型号和需求给出方案，你可以选择一个或要求修改。确认后才按选定规格生成，也可以用“直接生成”选择 Direct。新建 Ladder 时，Desktop 自动把用户原文和当前 CPU 的本地指令资料交给会话模型，一次生成完整程序。Design 在这一步前让你选择方案。
 
 - “列出我的 PLC 工程。”—— 调用 `mcp__gxworks__list_projects`，也可用来确认插件已连接。
 - “GX Works2 安装在哪里？有打开的工程吗？”—— `mcp__gxworks__list_gxworks2_sessions` 返回后端检测到的可执行文件路径，并单独列出窗口与工程状态。

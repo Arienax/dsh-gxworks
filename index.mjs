@@ -1,9 +1,11 @@
+import { explicitDirect, generatorName, humanTexts, registerLadderGenerator } from './launch/generate-ladder.mjs'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 /** 插件名，与包名一致：patch 覆盖时按它定位。 */
 export const name = 'dsh-gxworks'
+export const inject = ['tools', 'llm']
 
 const packageRoot = dirname(fileURLToPath(import.meta.url))
 const required = ['launch/mcp-launch.mjs', 'launch/bundled-runtime.mjs',
@@ -33,10 +35,26 @@ export function apply(ctx) {
     logger?.warn?.(`dsh-gxworks: 安装包缺少 ${missing.join('、')}，MCP 工具与技能不可用；请重新安装本包`)
     return
   }
+  const supportsGenerator = Boolean(ctx.get?.('llm')?.stream && ctx.get?.('tools')?.register)
+  if (supportsGenerator) registerLadderGenerator(ctx, quotesUserMessages)
   const approvals = new WeakMap()
   const revisedRequirements = new WeakMap()
   ctx.on('tools/post-execute', async (exec, result, next) => {
-    if (exec.name !== 'mcp__gxworks__propose_design_plan' || result.isError || !exec.agent) return next()
+    if (result.isError || !exec.agent) return next()
+    if (supportsGenerator && ['mcp__gxworks__create_project', 'mcp__gxworks__confirm_design_plan'].includes(exec.name)) {
+      const decision = await next()
+      const body = result.value?.structuredContent
+      const data = body?.data
+      if (decision.kind !== 'accept' || decision.value !== undefined || decision.content !== undefined ||
+          (data?.project?.target_mode || data?.target_mode) !== 'ladder' ||
+          !['get_generation_context', 'get_design_context'].includes(data.next_actions?.[0]?.tool)) return decision
+      const design = data.next_actions[0].tool === 'get_design_context'
+      const routed = { ...body, data: { ...data, next_actions: [{ tool: generatorName,
+        arguments: { project_id: data.selected_project_id || data.project_id, ...(design ? { stage: 'design' } : {}) } }] } }
+      return { ...decision, value: { ...result.value, structuredContent: routed,
+        content: [{ type: 'text', text: JSON.stringify(routed) }] } }
+    }
+    if (exec.name !== 'mcp__gxworks__propose_design_plan') return next()
     const decision = await next()
     if (decision.kind !== 'accept' || decision.value !== undefined || decision.content !== undefined) return decision
     const body = result.value?.structuredContent
@@ -98,6 +116,10 @@ export function apply(ctx) {
       }
     }
     if (!exec.agent) return next()
+    if (tool === 'create_project' && args.generation_mode === 'direct' &&
+        !explicitDirect(humanTexts(exec.agent.session).at(-1))) {
+      return { kind: 'deny', reason: '本次用户消息未选择 Direct。省略 generation_mode 继续默认 Design。用户可用“直接生成”或 /gxworks-direct 选择快速生成。' }
+    }
     if (['get_design_context', 'get_generation_context'].includes(tool) && args.user_requirement &&
         revisedRequirements.get(exec.agent.session) !== normalize(args.user_requirement) &&
         !quotesUserMessages(args.user_requirement, exec.agent.session.snapshotEvents())) {
