@@ -95,7 +95,11 @@ try {
   const facts = await call('search_plc_manual', { query: 'PLSY 操作数', plc_model: 'FX3U', top_k: 2 })
   const dereference = value => value?.$ref ? facts.data.objects[value.$ref.slice('#/objects/'.length)] : value
   assert.equal(facts.data.delivery.complete, true, 'small retrieval should fit in one delivered page')
-  const rows = dereference(dereference(facts.data.document).results)
+  const document = dereference(facts.data.document)
+  assert.equal(document.language, 'ladder')
+  assert.equal(document.language_source, 'project')
+  assert(tools.find(tool => tool.name === 'search_plc_manual').inputSchema.properties.language.enum.includes('sfc'))
+  const rows = dereference(document.results)
   assert(rows?.length > 0, JSON.stringify(facts))
   await call('get_generation_context', { user_requirement: 'X0 controls Y0', workflow: 'direct_generation' })
   assert(diagnostics.includes('安装根来源：bundled'), diagnostics)
