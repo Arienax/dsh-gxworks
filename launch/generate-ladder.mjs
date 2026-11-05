@@ -172,19 +172,22 @@ function submissionTool(tools, agent, ladderSchema, research, direct) {
 }
 
 function wireReview(value, compact) {
-  const { selected, alternatives = [], compared_families = {}, grouped_option } = value
-  const limitations = value.limitations || (typeof compared_families.limitations === 'string' ? compared_families.limitations : undefined)
+  const { selected, grouped_option } = value
+  const alternatives = Array.isArray(value.alternatives) ? value.alternatives : []
+  const compared_families = value.compared_families && typeof value.compared_families === 'object' ? value.compared_families : {}
+  const limitations = typeof value.limitations === 'string' ? value.limitations : compared_families.limitations
   const comparisons = Object.values(compared_families).filter(row => row && typeof row.instruction === 'string'
     && typeof row.tradeoff === 'string').map(row => ({ method: row.instruction, tradeoff: row.tradeoff }))
-  const methods = alternatives.map(({ method, tradeoff, note }) => ({ method,
+  const methods = alternatives.filter(row => row && typeof row.method === 'string' && typeof row.tradeoff === 'string')
+    .map(({ method, tradeoff, note }) => ({ method,
     tradeoff: note && typeof note === 'string' ? [tradeoff, note].filter(Boolean).join(' ') : tradeoff }))
   const names = Object.entries(compared_families).filter(([key]) => key !== 'limitations')
     .map(([, row]) => typeof row === 'string' ? row : row?.instruction).filter(Boolean)
   if (grouped_option?.instruction && grouped_option.comparison) methods.push({
     method: grouped_option.instruction, tradeoff: grouped_option.comparison })
-  return { selected, alternatives: compact ? methods : [...methods, ...comparisons],
-    ...(value.assumptions ? { assumptions: value.assumptions } : {}),
-    ...(compact ? { reviewed_instructions: [...new Set(names)] } : {}), ...(limitations ? { limitations } : {}) }
+  return { ...(typeof selected === 'string' && selected.trim() ? { selected } : {}), alternatives: compact ? methods : [...methods, ...comparisons],
+    ...(Array.isArray(value.assumptions) ? { assumptions: value.assumptions.filter(row => typeof row?.condition === 'string' && row.condition.trim()).map(({ condition }) => ({ condition })) } : {}),
+    ...(compact ? { reviewed_instructions: [...new Set(names)] } : {}), ...(typeof limitations === 'string' && limitations.trim() ? { limitations } : {}) }
 }
 
 async function modelResponse(llm, exec, system, input, metrics, stage, submission) {
@@ -311,21 +314,21 @@ export function registerLadderGenerator(ctx, quotes) {
       // Some tool adapters close the review one field late. A sole nested program can still be submitted verbatim.
       if (reply && !reply.ladder && reply.implementation_review?.ladder) reply.ladder = reply.implementation_review.ladder
       const recover = (error, draft) => ({ status: 'repair_required', project_id: project.project_id,
-        error, draft, model_calls: metrics.length, metrics, next_actions: [{ tool: 'create_program_candidate',
+        error, draft: draft ?? null, model_calls: metrics.length, metrics, next_actions: [{ tool: 'create_program_candidate',
           arguments: { generation_context_id: doc.generation_context_id },
           instruction: '就地修正已返回的程序或补齐选型比较，沿用这次读取的工程与手册。' }],
         context_document: id, manual_documents: [] })
       if (response.error) return recover(response.error, response.draft)
-      if (!reply?.ladder || !reply.implementation_review) return recover('生成响应缺少 ladder 或 implementation_review。', reply)
+      if (!reply?.ladder) return recover('生成响应缺少 ladder。', reply)
       let implementation
-      try { implementation = wireReview(reply.implementation_review, compactReview) }
+      try { implementation = wireReview(reply.implementation_review || {}, compactReview) }
       catch (error) { return recover(String(error.message), reply) }
       const review = { ...implementation, context_document: id, manual_documents: [] }
       if (!review.limitations?.trim()) delete review.limitations
       let candidate, program
       try { program = wireLadder(reply.ladder) }
       catch (error) { return recover(String(error.message), reply) }
-      const example = reply.io_example || reply.implementation_review.io_example
+      const example = reply.io_example || reply.implementation_review?.io_example
       const save = () => invoke('create_program_candidate', { ladder: program,
         generation_context_id: doc.generation_context_id, implementation_review: review, ...(example ? { io_example: example } : {}) })
       async function saveWithBehaviorCheck() {

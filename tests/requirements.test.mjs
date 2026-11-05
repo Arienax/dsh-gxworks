@@ -87,7 +87,8 @@ test('new Ladder routes to one Desktop generator and preserves the selected mode
   }
 })
 
-for (const degraded of [false, true]) test('Direct reads all pages and reports the delivered format; degraded=' + degraded, async () => {
+for (const degraded of [false, true]) for (const notes of ['complete', 'misnested', 'absent'])
+test(`Direct preserves the program and reads all pages; degraded=${degraded}; notes=${notes}`, async () => {
   const raw = 'Copy the input buffer to the output buffer.', scope = { type: 'object', required: ['r'], properties: { r: { type: 'array' } } }
   const ladder = { r: [{ c: [], b: [{ i: [], o: ['BMOV D0 D10 K4'] }] }], device_comments: [] }
   const review = { selected: 'BMOV copies the whole block.', alternatives: [{ method: 'MOV', tradeoff: 'One per word.' }] }
@@ -116,6 +117,7 @@ for (const degraded of [false, true]) test('Direct reads all pages and reports t
             tool: 'get_generation_context', arguments: { cursor: 'next' } } } }
       } else {
         assert(name.endsWith('create_program_candidate')); saved = args
+        assert.deepEqual(JSON.parse(JSON.stringify(args)), args, 'Desktop arguments must contain no undefined values')
         assert.equal(notices.length, 1, 'notify before backend validation starts')
         data = { candidate_id: 'example', version_id: 'v0001', fragment_review: fragmentReview,
           implementation_review: { assumptions: [{ condition: 'Model implementation note' }] }, delivery: { preferred_format: 'gxw',
@@ -139,11 +141,17 @@ for (const degraded of [false, true]) test('Direct reads all pages and reports t
       ...Object.fromEntries(table.columns.map((key, n) => [key, row[n]])), ...table.extra_fields_by_row?.[i] })), facts)
     assert.equal(packet.request, raw)
     assert.equal(JSON.parse(options.messages[0].content[0].text).output_schema, undefined)
-    yield { type: 'block-end', index: 0, block: { type: 'tool-call', name: 'submit_ladder',
-      arguments: JSON.stringify({ implementation_review: { ...review, compared_families_note: 'extra',
+    const value = { implementation_review: { ...review, compared_families_note: 'extra',
         alternatives: review.alternatives.map(row => ({ ...row, note: 'Separate writes.' })), compared_families: {
           copy: { instruction: 'BMOV', tradeoff: 'Copies a contiguous range.' }, limitations: 'Check the available range.' },
-        ladder: { networks: [{ shared_contacts: [], output_branches: [{ series_contacts: [], outputs: ['BMOV D0 D10 K4'] }] }], device_comments: [] } } }) } }
+        ladder: { networks: [{ shared_contacts: [], output_branches: [{ series_contacts: [], outputs: ['BMOV D0 D10 K4'] }] }], device_comments: [] } } }
+    if (notes !== 'complete') {
+      value.ladder = value.implementation_review.ladder
+      if (notes === 'misnested') value.implementation_review = { grouped_option: {
+        instruction: 'BMOV', comparison: 'Copies a contiguous range.', selected: 'Nested model note', assumptions: [] } }
+      else delete value.implementation_review
+    }
+    yield { type: 'block-end', index: 0, block: { type: 'tool-call', name: 'submit_ladder', arguments: JSON.stringify(value) } }
     yield { type: 'finish', reason: { kind: 'tool-calls' } }
   } }
   apply({ on() {}, get: name => ({ tools, llm })[name] })
@@ -160,10 +168,14 @@ for (const degraded of [false, true]) test('Direct reads all pages and reports t
   assert.deepEqual(notices, [{ type: 'dsh-gxworks/verification-started', data: {}, options: { ignorable: true } }])
   assert.equal(result.status, degraded ? 'delivery_degraded' : undefined)
   if (degraded) assert.deepEqual(result.delivery, result.candidate.delivery)
-  assert.deepEqual(saved, { ladder, generation_context_id: 'receipt', implementation_review: {
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), result, 'Desktop result must contain no undefined values')
+  if (notes === 'complete') assert.deepEqual(saved, { ladder, generation_context_id: 'receipt', implementation_review: {
     selected: review.selected, alternatives: [
       { method: 'MOV', tradeoff: 'One per word. Separate writes.' }, { method: 'BMOV', tradeoff: 'Copies a contiguous range.' }],
     limitations: 'Check the available range.', manual_documents: [], context_document: 'manual-context' } })
+  else assert.deepEqual(saved, { ladder, generation_context_id: 'receipt', implementation_review: {
+    alternatives: notes === 'misnested' ? [{ method: 'BMOV', tradeoff: 'Copies a contiguous range.' }] : [],
+    manual_documents: [], context_document: 'manual-context' } })
 })
 
 for (const fixed of [true, false]) test('An independent counterexample gets one scoped repair; resolved=' + fixed, async () => {
