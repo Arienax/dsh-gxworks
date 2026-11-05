@@ -117,7 +117,8 @@ for (const degraded of [false, true]) test('Direct reads all pages and reports t
       } else {
         assert(name.endsWith('create_program_candidate')); saved = args
         assert.equal(notices.length, 1, 'notify before backend validation starts')
-        data = { candidate_id: 'example', version_id: 'v0001', fragment_review: fragmentReview, delivery: { preferred_format: 'gxw',
+        data = { candidate_id: 'example', version_id: 'v0001', fragment_review: fragmentReview,
+          implementation_review: { assumptions: [{ condition: 'Model implementation note' }] }, delivery: { preferred_format: 'gxw',
           actual_format: degraded ? 'csv' : 'gxw', degraded, reason: degraded ? 'project readback mismatch' : null } }
       }
       return { isError: false, value: { structuredContent: { ok: true, data } } }
@@ -155,6 +156,7 @@ for (const degraded of [false, true]) test('Direct reads all pages and reports t
   assert.equal(generations, 1)
   assert.equal(result.model_calls, 1)
   assert.deepEqual(result.candidate.fragment_review, fragmentReview, 'uncertain analysis stays advisory without a repair request')
+  assert.deepEqual(result.implementation_review.assumptions, [{ condition: 'Model implementation note' }], 'retain model notes without source labels')
   assert.deepEqual(notices, [{ type: 'dsh-gxworks/verification-started', data: {}, options: { ignorable: true } }])
   assert.equal(result.status, degraded ? 'delivery_degraded' : undefined)
   if (degraded) assert.deepEqual(result.delivery, result.candidate.delivery)

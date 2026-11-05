@@ -301,7 +301,7 @@ export function registerLadderGenerator(ctx, quotes) {
         '只调用 submit_ladder。其参数 schema 是本次唯一返回格式；以下 Web 程序协议仅定义该工具的 ladder 字段。',
         '<ladder_field>', doc.generation_instructions, '</ladder_field>', manualFormat,
         contextArgs.workflow === 'detailed' ? '按已确认的方案实施。' : fragments?.length ?
-          '优先复用能完成工艺的 executable_fragments。按片段示例比较输入、采样精度、状态范围和并发行为。适用时在对应梯级按 syntax 填 FRAG 和实参。按相同约束比较漏接事件、来料间距和容差。定时从规格所述事件起算。按可观察的节拍推进，计数可能跨步时按实际经过时间处理。内部容量和节拍填 assumptions，用户条件必须逐字引用。' : directSelection,
+          '优先复用能完成工艺的 executable_fragments。按片段示例比较输入、采样精度、状态范围和并发行为。适用时在对应梯级按 syntax 填 FRAG 和实参。按相同约束比较漏接事件、来料间距和容差。定时从规格所述事件起算。按可观察的节拍推进，计数可能跨步时按实际经过时间处理。内部容量和节拍填 assumptions，只记录模型实现选择，用户需求以原消息为准。' : directSelection,
         '工具中的 networks / shared_contacts / output_branches / series_contacts / outputs 分别承载 Web 的 r / c / b / i / o。所有网络没有标题字段。',
         compactReview ? 'compared_families 每组只填已查助记符。selected、alternatives、decisions、open_items 简洁不重复。' :
           '在 implementation_review 为各组填写代表指令与简短取舍。',
@@ -381,7 +381,7 @@ export function registerLadderGenerator(ctx, quotes) {
         return recover(String(error.message), { ladder: program, implementation_review: implementation, ...(example ? { io_example: example } : {}) })
       }
       const result = { project_id: project.project_id, workflow: doc.workflow_mode, model_calls: metrics.length, metrics,
-        context_pages: pages, implementation_review: implementation, candidate }
+        context_pages: pages, implementation_review: candidate.implementation_review || implementation, candidate }
       if (candidate.save_result?.status === 'saved_native_diagnostic') return { ...result, status: 'native_validation_failed',
         version_id: candidate.version_id, diagnostics: candidate.validation }
       if (candidate.delivery?.degraded) return { ...result, status: 'delivery_degraded',
