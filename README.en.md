@@ -18,7 +18,7 @@ To install from GitHub, use `dsh plugin --profile web add github:Arienax/dsh-gxw
 
 Open a chat in the same profile and try one of these requests.
 
-New programs start in Design mode and use the approach you confirm. Say “direct mode” or use /gxworks-direct to generate immediately. For new Ladder programs, Desktop reads the CPU-specific manual and can use executable shift or copy fragments in a single generation. The backend can replay confirmed behavior conditions or independent I/O cases. A definite counterexample allows one repair of the affected networks. The result identifies behavior that still needs verification. [Independent case format](runtime/README.md#independent-io-cases)
+New programs start in Design mode and use the approach you confirm. Say “direct mode” or use /gxworks-direct to generate immediately. For new Ladder programs, Desktop reads the CPU-specific manual and can use executable shift or copy fragments in a single generation. A chat notice appears once when verification starts. Unresolved external writes to fragment storage remain advisory; the candidate is preserved even when its guard uses a different form. The backend can replay confirmed behavior conditions or independent I/O cases. A definite counterexample allows one repair of the affected networks. The result identifies behavior that still needs verification. [Independent case format](runtime/README.md#independent-io-cases)
 
 - “List my PLC projects.” This calls `mcp__gxworks__list_projects` and lets you check that the plugin is connected.
 - “Where is GX Works2 installed, and is a project open?” The `mcp__gxworks__list_gxworks2_sessions` tool reports the executable path detected by the backend and lists open windows and their project state separately.

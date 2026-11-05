@@ -1,7 +1,7 @@
 {
   "version": "0.4.0",
-  "release": "0.4.0-8cb0fb5",
-  "sourceCommit": "8cb0fb50b45b84577ba7129de54a93b574fd9071",
+  "release": "0.4.0-e110fd2",
+  "sourceCommit": "e110fd2387cc2444f73bf59755e92d2fe311ec1a",
   "repository": "https://github.com/Arienax/gxworks-agent",
   "archive": "GXWorks-Agent-MCP-windows-x64.zip",
   "directory": "GXWorks-Agent-MCP",

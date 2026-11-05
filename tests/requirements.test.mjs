@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { readFileSync } from 'node:fs'
+import { runInNewContext } from 'node:vm'
 import { apply } from '../index.mjs'
 
 function evaluate(tool, args, messages) {
@@ -92,6 +94,9 @@ for (const degraded of [false, true]) test('Direct reads all pages and reports t
   const facts = [1, 2, 3, 4].map(value => ({ dimension: 'test.long_fact_dimension', value,
     selection_applicability: 'applicable', ...(value === 3 ? { conditions: ['only on edge'] } : {}) }))
   let reads = 0, generations = 0, saved
+  const fragmentReview = { status: 'not_established', blocking: false,
+    findings: [{ network_index: 2, reason: 'external_write_activation_not_established' }] }
+  const notices = []
   const doc = { project_id: 'p', generation_context_id: 'receipt', generation_instructions: 'Web Direct',
     workflow_mode: 'direct_generation', output_contract: { protocol: 'compact_ladder/1.3', tool: 'create_program_candidate' },
     generation_input: { request: raw, output_schema: scope }, instruction_research: { families: { copy: ['BMOV'] }, manual: { coverage: { status: 'incomplete' }, knowledge: [{ facts }] } } }
@@ -111,7 +116,8 @@ for (const degraded of [false, true]) test('Direct reads all pages and reports t
             tool: 'get_generation_context', arguments: { cursor: 'next' } } } }
       } else {
         assert(name.endsWith('create_program_candidate')); saved = args
-        data = { candidate_id: 'example', version_id: 'v0001', delivery: { preferred_format: 'gxw',
+        assert.equal(notices.length, 1, 'notify before backend validation starts')
+        data = { candidate_id: 'example', version_id: 'v0001', fragment_review: fragmentReview, delivery: { preferred_format: 'gxw',
           actual_format: degraded ? 'csv' : 'gxw', degraded, reason: degraded ? 'project readback mismatch' : null } }
       }
       return { isError: false, value: { structuredContent: { ok: true, data } } }
@@ -140,11 +146,16 @@ for (const degraded of [false, true]) test('Direct reads all pages and reports t
     yield { type: 'finish', reason: { kind: 'tool-calls' } }
   } }
   apply({ on() {}, get: name => ({ tools, llm })[name] })
-  const session = { snapshotEvents: () => [message(raw)], requestHeader: () => ({
+  const session = { snapshotEvents: () => [message(raw)], append: (type, data, options) => {
+    assert.equal(generations, 1, 'notify after generation')
+    notices.push({ type, data, options })
+  }, requestHeader: () => ({
     config: { provider: 'selected-provider', model: 'current-model' } }) }
   const result = await tools.generator.execute({ project_id: 'p' }, { agent: { session }, signal: new AbortController().signal, callId: 'test' })
   assert.equal(generations, 1)
   assert.equal(result.model_calls, 1)
+  assert.deepEqual(result.candidate.fragment_review, fragmentReview, 'uncertain analysis stays advisory without a repair request')
+  assert.deepEqual(notices, [{ type: 'dsh-gxworks/verification-started', data: {}, options: { ignorable: true } }])
   assert.equal(result.status, degraded ? 'delivery_degraded' : undefined)
   if (degraded) assert.deepEqual(result.delivery, result.candidate.delivery)
   assert.deepEqual(saved, { ladder, generation_context_id: 'receipt', implementation_review: {
@@ -154,7 +165,7 @@ for (const degraded of [false, true]) test('Direct reads all pages and reports t
 })
 
 for (const fixed of [true, false]) test('An independent counterexample gets one scoped repair; resolved=' + fixed, async () => {
-  const raw = 'A request should light only its assigned lamp.', calls = [], submissions = []
+  const raw = 'A request should light only its assigned lamp.', calls = [], submissions = [], notices = []
   const first = { c: [], b: [{ i: [], o: ['COIL Y0'] }] }
   const next = { c: ['NO X0'], b: [{ i: [], o: ['COIL Y1'] }] }
   const inputSequence = [{ at_ms: 0, set: { X0: 0 } }]
@@ -182,6 +193,7 @@ for (const fixed of [true, false]) test('An independent counterexample gets one 
             manual: { knowledge: ['original manual content'] } } } }
       } else {
         assert(name.endsWith('create_program_candidate')); submissions.push(structuredClone(args))
+        assert.equal(notices.length, 1, 'repair must not add another notice')
         if (submissions.length === 1 || !fixed) {
           const failure = { ok: false, error: { code: 'CANDIDATE_BEHAVIOR_MISMATCH', behavior_result: ioResult } }
           return fixed ? { isError: true, error: { message: JSON.stringify(failure) } } : { value: { structuredContent: failure } }
@@ -218,14 +230,48 @@ for (const fixed of [true, false]) test('An independent counterexample gets one 
     yield { type: 'finish', reason: { kind: 'tool-calls' } }
   } }
   apply({ on() {}, get: name => ({ tools, llm })[name] })
-  const session = { snapshotEvents: () => [message(raw)], requestHeader: () => ({ config: { model: 'test', provider: 'test' } }) }
+  const session = { snapshotEvents: () => [message(raw)], append: type => notices.push(type),
+    requestHeader: () => ({ config: { model: 'test', provider: 'test' } }) }
   const result = await tools.generator.execute({ project_id: 'p' }, { agent: { session }, signal: new AbortController().signal })
   assert.equal(reads, 1)
   assert.deepEqual(calls, ['submit_ladder', 'repair_networks'])
+  assert.deepEqual(notices, ['dsh-gxworks/verification-started'])
   assert.equal(submissions.length, 2)
   assert.deepEqual(submissions[1], { ...submissions[0], ladder: { r: original.map((row, index) => index === 1 ? next : row) } })
   assert.deepEqual(submissions[0].implementation_review.reviewed_instructions, ['BMOV'])
   if (fixed) assert.deepEqual(submissions[0].implementation_review.alternatives,
     [{ method: 'BMOV', tradeoff: 'One contiguous transfer.' }])
   assert.equal(fixed ? result.candidate.behavior_result.status : result.status, fixed ? 'passed_in_cases' : 'behavior_mismatch')
+})
+
+test('verification notice renders in the chat without becoming a model message', () => {
+  let plugin, definition, renderer, dictionaries
+  runInNewContext(readFileSync(new URL('../client.mjs', import.meta.url), 'utf8'), {
+    window: { __ModuleLoader__: { load(module) {
+      assert.equal(module.id, 'dsh-gxworks')
+      plugin = module.factory(name => {
+        assert.equal(name, 'react')
+        return { createElement: (tag, props, text) => ({ tag, props, text }) }
+      })
+    } } },
+  })
+  plugin.apply({
+    effect: callback => callback(),
+    locale: { register: (_namespace, values) => { dictionaries = values } },
+    uiConversation: { events: { register: value => { definition = value } } },
+    slots: { inject: (_name, callback) => callback(), register: (_options, component) => { renderer = component } },
+  })
+  assert.equal(definition.match({ type: 'assistant/message' }), null)
+  const event = { type: 'dsh-gxworks/verification-started', seq: 7, data: {}, ignorable: true }
+  const match = definition.match(event)
+  const node = definition.buildViewNode({ key: 'notice:7', id: match.id,
+    start: { event, location: { kind: 'session' } } })
+  assert.equal(node.visibility, 'visible')
+  assert.equal(node.anchorSeq, 7)
+  assert.equal(node.target, 'chat')
+  for (const language of ['zh', 'en']) {
+    const rendered = renderer({ t: key => dictionaries[language][key] })
+    assert.equal(rendered.props.role, 'status')
+    assert.equal(rendered.text, dictionaries[language].started)
+  }
 })

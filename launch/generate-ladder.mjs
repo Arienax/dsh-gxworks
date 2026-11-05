@@ -367,6 +367,7 @@ export function registerLadderGenerator(ctx, quotes) {
           return save()
         }
       }
+      exec.agent.session.append('dsh-gxworks/verification-started', {}, { ignorable: true })
       try {
         candidate = await saveWithBehaviorCheck()
       } catch (error) {

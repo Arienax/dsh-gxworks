@@ -18,12 +18,14 @@
   },
   "exports": {
     ".": "./index.mjs",
+    "./client": "./client.mjs",
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
   "files": [
     "index.mjs",
+    "client.mjs",
     "cordis.patch.yml",
     "launch/mcp-launch.mjs",
     "launch/generate-ladder.mjs",
@@ -59,6 +61,14 @@
     "mitsubishi"
   ],
   "dsh": {
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-chat",
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    },
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
