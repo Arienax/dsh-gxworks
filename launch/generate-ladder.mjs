@@ -242,9 +242,17 @@ export function registerLadderGenerator(ctx, quotes) {
       if (!exec.agent) throw Error('需要当前 Desktop 会话。')
       let calls = 0
       async function invoke(tool, input) {
-        const result = await tools.execute({ name: 'mcp__gxworks__' + tool, arguments: input,
-          callId: exec.callId + '-gx-' + (++calls), rootCallId: exec.rootCallId || exec.callId,
-          parent: exec.token, signal: exec.signal, agent: exec.agent })
+        const name = 'mcp__gxworks__' + tool
+        const callId = exec.callId + '-gx-' + (++calls)
+        let result
+        if (typeof tools.selectExecutor === 'function') {
+          const batch = await tools.execute({ calls: [{ id: callId, name, arguments: JSON.stringify(input) }],
+            agent: exec.agent, signal: exec.signal, toolSet: exec.toolSet })
+          result = batch.results[0].result
+        } else {
+          result = await tools.execute({ name, arguments: input, callId, rootCallId: exec.rootCallId || exec.callId,
+            parent: exec.token, signal: exec.signal, agent: exec.agent })
+        }
         for (const extra of result.additionalContexts || []) exec.deferContext(extra)
         if (result.isError) {
           const message = result.error.message
