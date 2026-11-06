@@ -10,6 +10,212 @@ export function explicitDirect(text = '') {
   return /(?:^|[\n。！？；，,.!;]\s*)(?:请|请你|这次|本次)?\s*(?:直接(?:帮我)?生成|跳过(?:方案|设计)确认|使用\s*direct\s*模式|(?:use\s+)?direct\s+(?:mode|generation)|\/gxworks-direct)(?:[\s，。,.!！]|程序|梯形图|$)/iu.test(text)
 }
 
+// Models stream tool arguments as raw text. One bare quote or newline inside an
+// explanation must not cost the whole stage: repair the text, then parse.
+export function repairJsonText(text) {
+  const source = String(text ?? '')
+  let out = ''
+  let inString = false
+  let escaped = false
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index]
+    if (inString) {
+      if (escaped) { out += character; escaped = false; continue }
+      if (character === '\\') { out += character; escaped = true; continue }
+      if (character === '\n') { out += '\\n'; continue }
+      if (character === '\r') { out += '\\r'; continue }
+      if (character === '\t') { out += '\\t'; continue }
+      if (character === '"') {
+        let next = index + 1
+        while (next < source.length && /\s/u.test(source[next])) next += 1
+        const follower = source[next]
+        // A quote only closes a string when the structure continues after it.
+        if (follower === undefined || ',:}]'.includes(follower)) { out += '"'; inString = false }
+        else out += '\\"'
+        continue
+      }
+      out += character
+      continue
+    }
+    if (character === '"') inString = true
+    out += character
+  }
+  return out.replace(/,(\s*[}\]])/gu, '$1')
+}
+
+/** Parse one model submission, tolerating a fence and recoverable syntax slips. */
+export function parseJsonText(text) {
+  const trimmed = String(text ?? '').trim()
+  const fenced = trimmed.match(/^`{3}(?:json)?[ \t]*\n([\s\S]*?)\n?`{3}$/iu)
+  for (const candidate of fenced ? [fenced[1], trimmed] : [trimmed]) {
+    if (!candidate) continue
+    try { return { value: JSON.parse(candidate) } } catch { /* try the repaired text */ }
+    const repaired = repairJsonText(candidate)
+    if (repaired !== candidate) {
+      try { return { value: JSON.parse(repaired) } } catch { /* report the failure below */ }
+    }
+  }
+  return { error: '模型提交的内容不是有效 JSON。' }
+}
+
+/** Use the submission call itself; unrelated extra calls are the provider's noise. */
+export function pickSubmission(calls, name) {
+  const list = [...calls]
+  const matched = list.filter(call => call?.name === name)
+  if (matched.length === 1) return { call: matched[0] }
+  return { error: matched.length
+    ? `模型给出了 ${matched.length} 个 ${name} 提交。`
+    : `模型未返回 ${name} 提交${list.length ? '（实际返回：' + list.map(call => call?.name).join('、') + '）' : ''}。` }
+}
+
+// A draft can be complete except for facts only the human can supply. Those
+// answers are the missing input, so the window must still open instead of
+// bouncing the draft back to the model for another full analysis.
+const answerableErrors = new Set(['required_parameter_missing', 'parameter_details_missing'])
+
+/** The approach the user approved for this session, consumed by confirm_design_plan. */
+export const designApprovals = new WeakMap()
+/** A requirement the user changed through the window: the only allowed rewrite. */
+export const revisedRequirements = new WeakMap()
+
+export function normalizeRequirement(text) {
+  return String(text ?? '').trim().replace(/\s+/gu, ' ')
+}
+
+function pendingParameters(review) {
+  const rows = Array.isArray(review?.parameters) ? review.parameters : []
+  return rows.filter(row => row && row.id && row.required !== false && !String(row.value ?? '').trim())
+}
+
+function parameterQuestionId(row) {
+  return 'gxworks-parameter-' + row.id
+}
+
+function answerValue(answer, id) {
+  const item = answer?.answers?.find(entry => entry?.id === id)
+  const custom = typeof item?.custom === 'string' ? item.custom.trim() : ''
+  if (custom) return custom
+  const selected = Array.isArray(item?.selected) ? item.selected : []
+  return selected.length === 1 && typeof selected[0] === 'string' ? selected[0].trim() : ''
+}
+
+/** Which instructions this approach claims, so the human sees them before approving. */
+function approachDetail(approach, label) {
+  const contract = approach?.generation_contract && typeof approach.generation_contract === 'object'
+    ? approach.generation_contract : {}
+  const instances = (Array.isArray(contract.instruction_instances) ? contract.instruction_instances : [])
+    .map(instance => typeof instance === 'string' ? instance : instance?.opcode)
+  const opcodes = [...new Set([...(contract.required_opcodes || []), ...instances].filter(Boolean))]
+  const forbidden = Array.isArray(contract.forbidden_opcodes) ? contract.forbidden_opcodes : []
+  return [`### ${label}`, approach.description,
+    approach.pros && `优势：${approach.pros}`, approach.cons && `限制：${approach.cons}`,
+    opcodes.length > 0 && '指令：' + opcodes.join('、'),
+    forbidden.length > 0 && '禁用指令：' + forbidden.join('、'),
+    approach.generation_guide,
+    ...['implementation_semantics', 'implementation_preferences', 'construction_plan', 'explicit_user_constraints']
+      .filter(key => approach[key] && Object.keys(approach[key]).length).map(key => JSON.stringify(approach[key]))]
+    .filter(Boolean).join('\n\n')
+}
+
+function droppedClaimLine(row) {
+  const claim = row?.claim && typeof row.claim === 'object' ? row.claim : {}
+  const text = [claim.summary, claim.claim, claim.text, claim.description]
+    .map(value => typeof value === 'string' ? value.trim() : '').find(Boolean)
+  const kind = [claim.operation, claim.target?.kind]
+    .map(value => typeof value === 'string' ? value.trim() : '').find(Boolean)
+  const label = [kind, text].filter(Boolean).join(' · ')
+  return '- ' + (label || String(row?.field || '标注'))
+}
+
+/**
+ * Show the draft and the facts it still needs in one window, then answer for it.
+ * @returns undefined when the draft is not for the human yet, `{block}` when the
+ * host cannot ask, otherwise `{data}` — the response the generator continues from.
+ */
+export async function reviewDesign(ctx, exec, body) {
+  const draft = body?.data
+  const choices = draft?.review?.approaches
+  if (!body?.ok || !choices?.length) return
+  const errors = Array.isArray(draft.issues?.errors) ? draft.issues.errors : []
+  const requiredParameters = pendingParameters(draft.review)
+  // Only a draft whose remaining errors are answers the human owes may still be
+  // confirmed here; anything else is a model error for the model to fix.
+  if (errors.length &&
+      !(requiredParameters.length > 0 && errors.every(issue => answerableErrors.has(issue?.code)))) return
+  const askUser = ctx.get?.('userQuestions')
+  if (!askUser) return { block: '当前宿主没有用户确认入口。可在 Desktop 打开此草稿继续确认。' }
+  const session = exec.agent?.session
+  designApprovals.delete(session)
+  const labels = choices.map((choice, i) => `方案 ${i + 1} · ${choice.name}`)
+  const { summary, approaches = [], io_table, parameters, ...spec } = draft.review
+  const detail = [summary, ...approaches.map((approach, i) => approachDetail(approach, labels[i])),
+    io_table?.length && '### I/O\n' + io_table.map(row => `- ${row.address} · ${row.label || ''}`).join('\n'),
+    parameters?.length && '### 参数\n' + parameters.map(row => `- ${row.name || row.id} · ${row.value ?? ''} ${row.unit || ''}`).join('\n'),
+    draft.dropped_claims?.length && '### 原文未支持的标注（已忽略）\n' + draft.dropped_claims.map(droppedClaimLine).join('\n'),
+    Object.keys(spec).length && '### 其他规格\n' + JSON.stringify(spec, null, 2),
+    '### 原始需求', draft.user_requirement].filter(Boolean).join('\n\n')
+  const question = { id: 'gxworks-design', header: '工程设计', question: '选择要按其生成程序的方案，或提出修改。',
+    detail, options: [...choices.map((a, i) => ({ label: labels[i], description: a.description || a.generation_guide || '按此方案生成' })),
+      { label: '修改方案', description: '返回设计阶段，补充要求或调整方案。' }] }
+  if (choices.length === 1) question.intent = { kind: 'plan-review', approve: labels[0], callId: exec.callId }
+  // Ask the facts the draft still needs in the same window, so the answers
+  // travel with the draft instead of arriving as an edited requirement.
+  const parameterQuestions = requiredParameters.map(row => ({ id: parameterQuestionId(row),
+    header: '设计参数', question: String(row.name || row.id).trim() || String(row.id),
+    ...(row.note ? { detail: String(row.note) } : {}),
+    ...(Array.isArray(row.options) && row.options.length
+      ? { options: row.options.map(option => ({ label: String(option) })) } : {}) }))
+  let answer, cancelled = false
+  try {
+    answer = await askUser.ask({ questions: [question, ...parameterQuestions], agent: exec.agent, signal: exec.signal })
+  } catch (error) {
+    if (error.code !== 'ASK_CANCELLED') throw error
+    // Closing the panel is not a request to redesign; say exactly that.
+    answer = { answers: [] }
+    cancelled = true
+  }
+  const item = answer.answers.find(entry => entry.id === question.id)
+  const index = item?.custom === undefined && item?.selected?.length === 1 ? labels.indexOf(item.selected[0]) : -1
+  const parameterAnswers = {}
+  const unanswered = []
+  for (const row of requiredParameters) {
+    const value = answerValue(answer, parameterQuestionId(row))
+    if (value) parameterAnswers[row.id] = value
+    else unanswered.push(String(row.name || row.id))
+  }
+  const answered = Object.keys(parameterAnswers).length > 0
+  if (cancelled && index < 0) {
+    return { data: { approved: false,
+      feedback: '用户关闭了确认窗口，没有选择方案。不要重新设计，也不要继续生成；请用户在对话里给出决定后再展示同一份草稿。' } }
+  }
+  if (index >= 0 && !unanswered.length) {
+    const selection = { draft_id: draft.draft_id, approach_id: choices[index].approach_id,
+      ...(answered ? { parameter_answers: parameterAnswers } : {}) }
+    designApprovals.set(session, selection)
+    return { data: { approved: true, next_actions: [{ tool: 'confirm_design_plan', arguments: selection }] } }
+  }
+  if (index >= 0) {
+    // Keep the same draft; only the answers are missing.
+    designApprovals.delete(session)
+    return { data: { approved: false,
+      feedback: `用户选择了${labels[index]}，但必填参数尚未回答：${unanswered.join('、')}。`
+        + '请用 propose_design_plan({}) 重新展示这份草稿并再次向用户提问；答案只随参数提交，不要并入 user_requirement，也不要重新设计。',
+      next_actions: [{ tool: 'propose_design_plan', arguments: {},
+        instruction: '用空参数重新展示当前草稿，确认窗口会再次收集这些答案。' }] } }
+  }
+  const custom = typeof item?.custom === 'string' ? item.custom.trim() : ''
+  const notes = [...(custom ? [custom] : []),
+    ...requiredParameters.map(row => parameterAnswers[row.id] && `${String(row.name || row.id).trim()}：${parameterAnswers[row.id]}`)]
+    .filter(Boolean)
+  const response = { approved: false, feedback: custom || '用户要求修改方案。请先听取修改意见。' }
+  if (notes.length) {
+    const requirement = [draft.user_requirement, ...notes].join('\n')
+    revisedRequirements.set(session, normalizeRequirement(requirement))
+    response.next_actions = [{ tool: 'get_design_context', arguments: { user_requirement: requirement } }]
+  }
+  return { data: response }
+}
+
 function resolvePage(value, units, schema = false) {
   if (!value || typeof value !== 'object') return value
   if (value.$ref?.startsWith('#/objects/') && Object.keys(value).length === 1) {
@@ -95,7 +301,7 @@ function contextText(packet) {
 
 const manualFormat = '手册 rows 按 columns 取值并继承 common、同序号 extra_fields_by_row；by_result 中所列 aspects 共享该项的结论和缺项。'
 const directSelection = '优先用本 CPU 能直接表达工艺的成组操作。准备逐项复制逻辑时，先换一种状态表示和推进事件：可以由公共时基推进整组状态，也可按事件更新单项记录。两种用法在同一输入下比较，只写一两句决定性差异。只排除实际比较过的用法。不得靠自行限定容量或输入节拍使实现成立。只生成所选的一份程序。'
-const selection = '按同一组工艺条件比较至少两种整体实现。区分题目要求与实现假设，估算各自的步数增长、状态和资源。未规定的容量、精度、互斥或排队条件不能作为排除另一种算法的理由。当同一段逻辑随元素或通道重复时，比较逐项展开和利用本 CPU 成组操作的整体方案，说明数据怎样表示、怎样更新、并发与复位怎样保持。优先采用能直接表达工艺、减少重复且满足原始行为的型号指令。资料缺项说明对选择的影响。'
+const designSelection = '按同一组工艺条件比较至少两种整体实现。区分题目要求与实现假设，估算各自的步数增长、状态和资源。未规定的容量、精度、互斥或排队条件不能作为排除另一种算法的理由。当同一段逻辑随元素或通道重复时，比较逐项展开和利用本 CPU 成组操作的整体方案，说明数据怎样表示、怎样更新、并发与复位怎样保持。草稿只写工艺事实、状态表示和推进方式：具体指令与操作数按协议不入草稿，在生成阶段由实现审查选择，除非用户原文明确指定。用户未说明而影响实现的事实写进 missing_info 的问题与选项，不要用假设顶替。资料缺项说明对选择的影响。'
 
 // The Web wire uses short keys. Spell out the same fields in the provider's tool schema.
 const ladderFields = { r: 'networks', c: 'shared_contacts', b: 'output_branches', i: 'series_contacts', o: 'outputs' }
@@ -190,16 +396,18 @@ function wireReview(value, compact) {
     ...(compact ? { reviewed_instructions: [...new Set(names)] } : {}), ...(typeof limitations === 'string' && limitations.trim() ? { limitations } : {}) }
 }
 
-async function modelResponse(llm, exec, system, input, metrics, stage, submission) {
+async function modelResponse(llm, exec, system, input, metrics, stage, submission, options = {}) {
   const config = exec.agent.session.requestHeader()?.config
   if (!config?.model || !config?.provider) throw Error('当前会话没有已选模型。')
   const started = Date.now(), blocks = new Map()
   let finish, usage
   const calls = new Map()
-  const task = stage === 'design'
-    ? '当前只做规格设计。原始需求是下面资料中的 request 字段。根据型号和工艺比较有实质差异的方案；调用 submit_design_plan 提交草稿供用户选择。'
-    : stage === 'repair' ? '按给出的反例和原始要求，只提交相关梯级的改动。'
-    : '现在按 request 生成一份程序。按 submit_ladder 的字段提交简短取舍和程序。'
+  const task = options.syntax ? '把给出的内容重写为一个合法 JSON 对象，字段名和文字不变。'
+    : stage === 'design'
+      ? '当前只做规格设计。原始需求是下面资料中的 request 字段。根据型号和工艺比较有实质差异的方案；调用 submit_design_plan 提交草稿供用户选择。'
+      : stage === 'design:repair' ? '只按 targets 提交字段修正，不要重写整份分析。'
+        : stage === 'repair' ? '按给出的反例和原始要求，只提交相关梯级的改动。'
+          : '现在按 request 生成一份程序。按 submit_ladder 的字段提交简短取舍和程序。'
   const messages = [{ role: 'user', content: [{ type: 'text', text: input }, { type: 'text', text: task }] }]
   for await (const chunk of llm.stream({ ...config, system, messages, ...(submission ? { tools: [submission] } : {}), sessionId: exec.agent.session.id, signal: exec.signal })) {
     if (chunk.type === 'text-delta') blocks.set(chunk.index, (blocks.get(chunk.index) || '') + chunk.text)
@@ -216,15 +424,25 @@ async function modelResponse(llm, exec, system, input, metrics, stage, submissio
   }
   if (finish?.kind !== 'stop' && !(submission && finish?.kind === 'tool-calls')) throw Error('Ladder 模型调用未正常结束：' + (finish?.failure?.message || finish?.kind || '连接中断'))
   metrics.push({ stage, model: config.model, elapsed_ms: Date.now() - started, ...(usage ? { usage } : {}) })
-  const draft = calls.size ? [...calls.values()].map(call => call.arguments).join('\n') : [...blocks.values()].join('').trim()
-  if (calls.size && (calls.size !== 1 || [...calls.values()][0].name !== submission?.name)) {
-    return { error: '模型未返回唯一的 ' + submission?.name + ' 提交。', draft }
+  let draft
+  if (calls.size) {
+    const picked = pickSubmission(calls.values(), submission?.name)
+    if (picked.error) return { error: picked.error, draft: [...calls.values()].map(call => call.arguments).join('\n') }
+    draft = picked.call.arguments
+  } else {
+    draft = [...blocks.values()].join('').trim()
   }
-  try {
-    return { value: JSON.parse(draft.replace(/^\x60{3}(?:json)?\s*\n([\s\S]*)\n\x60{3}$/i, '$1')) }
-  } catch {
-    return { error: '模型提交的内容不是有效 JSON。', draft }
+  const parsed = parseJsonText(draft)
+  if (parsed.value !== undefined) return { value: parsed.value }
+  // One bounded syntax-only retry keeps the analysed content; a second full call
+  // with the original task is what makes these failures cost minutes.
+  if (!options.repair) {
+    const fixed = await modelResponse(llm, exec,
+      '只修复 JSON 语法：把下面这段模型输出重写为一个合法 JSON 对象，字段名、字段值和文字都不改，不要新增或省略内容。',
+      draft.length > 60000 ? draft.slice(0, 60000) : draft, metrics, stage + ':syntax', submission, { syntax: true, repair: true })
+    if (fixed.value !== undefined) return { ...fixed, repaired: true }
   }
+  return { error: parsed.error, draft }
 }
 
 export function registerLadderGenerator(ctx, quotes) {
@@ -244,15 +462,8 @@ export function registerLadderGenerator(ctx, quotes) {
       async function invoke(tool, input) {
         const name = 'mcp__gxworks__' + tool
         const callId = exec.callId + '-gx-' + (++calls)
-        let result
-        if (typeof tools.selectExecutor === 'function') {
-          const batch = await tools.execute({ calls: [{ id: callId, name, arguments: JSON.stringify(input) }],
-            agent: exec.agent, signal: exec.signal, toolSet: exec.toolSet })
-          result = batch.results[0].result
-        } else {
-          result = await tools.execute({ name, arguments: input, callId, rootCallId: exec.rootCallId || exec.callId,
-            parent: exec.token, signal: exec.signal, agent: exec.agent })
-        }
+        const result = await tools.execute({ name, arguments: input, callId, rootCallId: exec.rootCallId || exec.callId,
+          parent: exec.token, signal: exec.signal, agent: exec.agent })
         for (const extra of result.additionalContexts || []) exec.deferContext(extra)
         if (result.isError) {
           const message = result.error.message
@@ -275,6 +486,33 @@ export function registerLadderGenerator(ctx, quotes) {
         raw = args.user_requirement || (texts.length === 1 ? texts[0] : undefined)
         if (!raw || !quotes(raw, exec.agent.session.snapshotEvents())) throw Error('请用相关的完整用户消息传入 user_requirement。')
       }
+      // A repair request otherwise costs a full round trip through the outer
+      // model, which then rewrites the draft by hand and loses the analysis.
+      // Resolve only the listed fields here, once.
+      async function repairDesign(state) {
+        const targets = Array.isArray(state.repair_targets) ? state.repair_targets : []
+        if (!targets.length || !state.repair_id || !state.analysis_id) return
+        const submission = { name: 'submit_design_repairs',
+          description: '只提交 repair_targets 列出的字段修正，其余草稿保持不变。',
+          parameters: { type: 'object', required: ['repairs'], additionalProperties: false, properties: {
+            repairs: { type: 'array', minItems: 1, maxItems: targets.length, items: { type: 'object',
+              required: ['path', 'value_json'], additionalProperties: false, properties: {
+                path: { type: 'string', enum: targets.map(target => target.path) },
+                value_json: { type: 'string', description: '修正后的值，用 JSON 文本表示；要删除该条时写 []。' } } } } } } }
+        const fixed = await modelResponse(llm, exec,
+          '只调用 submit_design_repairs。按 targets 的错误修正所列字段；能引用的证据必须逐字来自 request。'
+          + '原文没有的地址、指令或事实不要写成证据，删掉该条即可。不要重写整份分析。',
+          JSON.stringify({ request: raw, targets }), metrics, 'design:repair', submission)
+        const rows = fixed.value?.repairs
+        if (!Array.isArray(rows) || !rows.length) return
+        const repairs = []
+        for (const row of rows) {
+          if (!row || !targets.some(target => target.path === row.path)) continue
+          try { repairs.push({ path: row.path, value: JSON.parse(String(row.value_json ?? '')) }) } catch { /* skip a broken field */ }
+        }
+        if (!repairs.length) return
+        return invoke('propose_design_plan', { analysis_id: state.analysis_id, repair_id: state.repair_id, repairs })
+      }
       if (args.stage === 'design' && !project.has_confirmed_spec) {
         const { content: design } = await readDocument(invoke, 'get_design_context', {
           user_requirement: raw, instruction_details: true })
@@ -282,16 +520,37 @@ export function registerLadderGenerator(ctx, quotes) {
         if (!design.analysis_schema?.properties?.approaches) throw Error('后端未交付 Web Design 草稿结构。')
         const submission = { name: 'submit_design_plan', parameters: design.analysis_schema,
           description: '按 Web Design 结构提交规格草稿。把工艺事实与备选实现分开，证据须逐字来自用户。' }
-        const analysis = await modelResponse(llm, exec, [design.analysis_instructions, manualFormat, selection].join('\n'), input, metrics, 'design', submission)
+        const analysis = await modelResponse(llm, exec, [design.analysis_instructions, manualFormat, designSelection].join('\n'), input, metrics, 'design', submission)
         if (analysis.error) return { status: 'repair_required', error: analysis.error, draft: analysis.draft,
           project_id: project.project_id, analysis_id: design.analysis_id, model_calls: metrics.length, metrics,
           next_actions: [{ tool: 'propose_design_plan', instruction: '整理返回的草稿，沿用 analysis_id 提交。' }] }
-        const proposal = await invoke('propose_design_plan', { analysis_id: design.analysis_id, analysis: analysis.value })
-        if (!proposal.approved) return { project_id: project.project_id, model_calls: metrics.length, metrics, proposal,
+        let proposal = await invoke('propose_design_plan', { analysis_id: design.analysis_id, analysis: analysis.value })
+        if (proposal.status === 'repair_required') {
+          const repaired = await repairDesign(proposal)
+          if (repaired && !repaired.status) proposal = repaired
+        }
+        // The post-execute hook ignores nested calls, so the window belongs here:
+        // waiting on the human must not hold up the rest of the model's batch.
+        const reviewed = await reviewDesign(ctx, exec, { ok: true, data: proposal })
+        if (!reviewed) return { project_id: project.project_id, model_calls: metrics.length, metrics, proposal,
           ...(proposal.status ? { status: proposal.status, next_actions: proposal.next_actions } : {}) }
-        const confirm = proposal.next_actions?.find(action => action.tool === 'confirm_design_plan')
+        if (reviewed.block) return { status: 'confirmation_unavailable', project_id: project.project_id,
+          model_calls: metrics.length, metrics, error: reviewed.block }
+        const settled = reviewed.data
+        if (!settled.approved) return { project_id: project.project_id, model_calls: metrics.length, metrics, proposal: settled,
+          ...(settled.status ? { status: settled.status, next_actions: settled.next_actions } : {}) }
+        const confirm = settled.next_actions?.find(action => action.tool === 'confirm_design_plan')
         if (!confirm) throw Error('缺少当前用户已选择的设计方案。')
-        const saved = await invoke('confirm_design_plan', confirm.arguments)
+        let saved
+        try {
+          saved = await invoke('confirm_design_plan', confirm.arguments)
+        } catch (error) {
+          // Bundled backends before this change reject the answer field outright.
+          if (!confirm.arguments?.parameter_answers || !/unknown field|parameter_answers/iu.test(String(error.message))) throw error
+          return { status: 'design_answers_unsupported', project_id: project.project_id, model_calls: metrics.length, metrics,
+            error: '内置后端还不接受参数答案，请更新后端包后重试。',
+            proposal: settled }
+        }
         if (!saved.confirmed) return { project_id: project.project_id, model_calls: metrics.length, metrics, proposal: saved }
       }
       const contextArgs = project.has_confirmed_spec || metrics.length ? { workflow: 'detailed' }
@@ -378,7 +637,9 @@ export function registerLadderGenerator(ctx, quotes) {
           return save()
         }
       }
-      exec.agent.session.append('dsh-gxworks/verification-started', {}, { ignorable: true })
+      // No chat notice here: the host persists unknown event types without the
+      // ignorable flag this plugin cannot set, and one such event makes the whole
+      // session log unreadable on the next load.
       try {
         candidate = await saveWithBehaviorCheck()
       } catch (error) {
