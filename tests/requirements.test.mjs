@@ -563,3 +563,32 @@ test('the confirmation window stays short and speaks the user language', async (
   assert.doesNotMatch(details[0], /用户指定|原文要求/u)
   assert.doesNotMatch(details[1], /User requirement|you asked/u)
 })
+
+test('a language without a label table gets a neutral symbol layout', async () => {
+  const seen = []
+  const ctx = { get: name => name === 'userQuestions' ? { ask: async ({ questions }) => {
+    seen.push(questions[0])
+    return { answers: questions.map((question, index) => index === 0
+      ? { id: question.id, selected: [question.options[0].label] }
+      : { id: question.id, custom: '保留' }) }
+  } } : undefined }
+  const approach = { approach_id: 'q', name: 'シフト追跡', description: '色ビットを左シフトして位置を追う',
+    generation_guide: '自己保持を作ってから色ごとに梯級を生成する', pros: '状態が明確', cons: '周期の再計算が必要',
+    generation_contract: { required_opcodes: ['WSFL'], forbidden_opcodes: ['M8011'] } }
+  const draft = { draft_id: 'd8', user_requirement: '三色物料の自動分別。D0 の色コードで判定し、複数個を追跡して仕分ける。',
+    review: { summary: '色コードで追跡して仕分ける', approaches: [approach],
+      io_bindings: [{ address: 'X1', label: '起動' }],
+      parameters: [{ id: 'stop', name: '停止後の扱い', required: true, value: '' }],
+      behavior_constraints: [{ id: 'b1' }] },
+    issues: { errors: [] } }
+  await reviewDesignShared(ctx, { callId: 'c3', agent: { session: {} } }, { ok: true, data: draft })
+  const question = seen[0]
+  assert.equal(question.header, undefined, 'no localized header either')
+  assert.match(question.detail, /⚙ WSFL/u)
+  assert.match(question.detail, /⛔ M8011/u)
+  assert.match(question.detail, /\? 停止後の扱い/u)
+  assert.match(question.detail, /» 三色物料の自動分別/u)
+  assert.doesNotMatch(question.detail, /拟定指令|Planned instructions|优势|Pros：|关键实现/u)
+  assert.doesNotMatch(question.detail, /\{"|"[a-z_]+":/u)
+  assert.equal(question.options[question.options.length - 1].label, '✎')
+})

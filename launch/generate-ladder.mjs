@@ -127,24 +127,34 @@ const windowWords = {
     keys: '关键实现', must: '必须', no: '禁用', anyOf: '任一',
     bindings: 'I/O', pending: '待确认参数', ignored: '原文未支持的标注（已忽略）', behaviors: '行为约束', operations: '操作意图', semantics: '执行语义',
     other: '其他', request: '原始需求（节选）', drop: '舍弃', guide: '实施要点',
+    header: '工程设计', ask: '选择要按其生成程序的方案，或提出修改。', change: '修改方案',
+    changeHint: '返回设计阶段，补充要求或调整方案。', params: '设计参数',
   },
   en: {
     advantages: 'Pros', limits: 'Cons', instructions: 'Planned instructions', forbidden: 'Avoiding',
     keys: 'Key choices', must: 'must', no: 'forbid', anyOf: 'any of',
     bindings: 'I/O', pending: 'Open questions', ignored: 'Claims the request did not support (dropped)', behaviors: 'behavior constraints', operations: 'operation intents', semantics: 'execution semantics',
     other: 'Other', request: 'Request (excerpt)', drop: 'drop', guide: 'How to build it',
+    header: 'Design review', ask: 'Pick the approach to implement, or ask for changes.', change: 'Change the approach',
+    changeHint: 'Go back to design and add or adjust requirements.', params: 'Design parameters',
   },
 }
 
+// Chinese and English have label tables; every other language gets a neutral
+// symbol layout, because only the model's own sentences are in that language.
 function localeOf(text) {
   const source = String(text ?? '')
   const cjk = (source.match(/[\u3400-\u9fff]/gu) || []).length
-  const ratio = cjk / Math.max(1, source.replace(/\s/gu, '').length)
-  return cjk >= 4 && ratio >= 0.15 ? 'zh' : 'en'
+  const kana = (source.match(/[\u3040-\u30ff]/gu) || []).length
+  const hangul = (source.match(/[\uac00-\ud7af]/gu) || []).length
+  const words = Math.max(1, source.replace(/\s/gu, '').length)
+  if (kana > 0 || hangul > 0) return 'neutral'
+  if (/[\u0400-\u04ff\u0600-\u06ff\u0e00-\u0e7f]/u.test(source)) return 'neutral'
+  return cjk >= 4 && cjk / words >= 0.15 ? 'zh' : 'en'
 }
 
 function wordsOf(locale) {
-  return windowWords[locale] || windowWords.en
+  return windowWords[locale] || {}
 }
 
 function shortText(text, limit) {
@@ -173,24 +183,33 @@ function semanticsText(rows, locale) {
   return parts.join(' ')
 }
 
+/** One labelled line, or a symbol-marked one when this language has no table. */
+function labelled(locale, key, mark, value, limit) {
+  const words = wordsOf(locale)
+  const text = limit ? shortText(value, limit) : String(value ?? '').trim()
+  if (!text) return ''
+  if (!key) return text
+  const label = words[key]
+  return label ? `${label}：${text}` : `${mark} ${text}`
+}
+
 /** Which instructions this approach claims, so the human sees them before approving. */
 function approachDetail(approach, label, locale) {
-  const words = wordsOf(locale)
   const contract = approach?.generation_contract && typeof approach.generation_contract === 'object'
     ? approach.generation_contract : {}
   const opcodes = [...new Set([...instructionNames(contract, 'required_opcodes'),
     ...instructionNames(contract, 'instruction_instances')])]
   const forbidden = instructionNames(contract, 'forbidden_opcodes')
-  const keys = semanticsText(approach?.implementation_semantics, locale)
+  const keys = locale === 'neutral' ? '' : semanticsText(approach?.implementation_semantics, locale)
   // No "you asked for this" wording: every opcode here is the draft's own choice,
   // whether it came from a claim about the request or from the model's planning.
-  return [`### ${label}`, shortText(approach.description, 200),
-    approach.pros && `${words.advantages}：${shortText(approach.pros, 140)}`,
-    approach.cons && `${words.limits}：${shortText(approach.cons, 140)}`,
-    opcodes.length > 0 && `${words.instructions}：${opcodes.join('、')}`,
-    forbidden.length > 0 && `${words.forbidden}：${forbidden.join('、')}`,
-    keys && `${words.keys}：${keys}`,
-    approach.generation_guide && `${words.guide}：${shortText(approach.generation_guide, 120)}`]
+  return [`### ${label}`, labelled(locale, '', '', approach.description, 200),
+    labelled(locale, 'advantages', '+', approach.pros, 140),
+    labelled(locale, 'limits', '−', approach.cons, 140),
+    opcodes.length > 0 && labelled(locale, 'instructions', '⚙', opcodes.join('、')),
+    forbidden.length > 0 && labelled(locale, 'forbidden', '⛔', forbidden.join('、')),
+    keys && labelled(locale, 'keys', '◆', keys),
+    labelled(locale, 'guide', '→', approach.generation_guide, 120)]
     .filter(Boolean).join('\n')
 }
 
@@ -200,13 +219,13 @@ function otherSummary(review, locale) {
   const parts = []
   const bindings = Array.isArray(review?.io_bindings) ? review.io_bindings : []
   if (bindings.length) {
-    parts.push(words.bindings + ' ' + bindings.slice(0, 6).map(row =>
+    parts.push((words.bindings || 'I/O') + ' ' + bindings.slice(0, 6).map(row =>
       `${row.address} ${shortText(row.label, 16)}${row.active_level === 0 ? '(NC)' : ''}`.trim()).join('、'))
   }
   for (const [key, label] of [['behavior_constraints', words.behaviors], ['operation_intents', words.operations],
     ['execution_semantics', words.semantics]]) {
     const rows = review?.[key]
-    if (Array.isArray(rows) && rows.length) parts.push(`${label} ${rows.length}`)
+    if (Array.isArray(rows) && rows.length) parts.push(label ? `${label} ${rows.length}` : `×${rows.length}`)
   }
   if (review?.user_notes) parts.push(shortText(review.user_notes, 120))
   return parts.join('；')
@@ -220,7 +239,7 @@ function droppedClaimLine(row, locale) {
   const kind = [claim.operation, claim.target?.kind]
     .map(value => typeof value === 'string' ? value.trim() : '').find(Boolean)
   const label = [kind, text].filter(Boolean).join(' · ')
-  return '- ' + (label || String(row?.field || words.drop))
+  return '- ' + (label || String(row?.field || words.drop || '?'))
 }
 
 /**
@@ -244,28 +263,31 @@ export async function reviewDesign(ctx, exec, body) {
   designApprovals.delete(session)
   const locale = localeOf(draft.user_requirement)
   const words = wordsOf(locale)
-  const labels = choices.map((choice, i) => `${locale === 'zh' ? '方案' : 'Option'} ${i + 1} · ${choice.name}`)
+  const numbered = choice => `${choice.name}`
+  const labels = choices.map((choice, i) => locale === 'neutral' ? `${i + 1} · ${numbered(choice)}`
+    : `${locale === 'zh' ? '方案' : 'Option'} ${i + 1} · ${choice.name}`)
   const { summary, approaches = [], parameters, ...rest } = draft.review
   const other = otherSummary(rest, locale)
   const open = (Array.isArray(parameters) ? parameters : []).filter(row => !String(row.value ?? '').trim())
   const ignored = (draft.dropped_claims || []).map(row => droppedClaimLine(row, locale))
   const detail = [shortText(summary, 200),
     ...approaches.map((approach, i) => approachDetail(approach, labels[i], locale)),
-    open.length > 0 && `${words.pending}：` + open.map(row => shortText(row.name || row.id, 60)).join('；'),
-    ignored.length > 0 && `${words.ignored}\n` + ignored.join('\n'),
-    other && `${words.other}：${other}`,
-    `${words.request}：${shortText(draft.user_requirement, 180)}`].filter(Boolean).join('\n\n')
-  const question = { id: 'gxworks-design', header: locale === 'zh' ? '工程设计' : 'Design review',
-    question: locale === 'zh' ? '选择要按其生成程序的方案，或提出修改。' : 'Pick the approach to implement, or ask for changes.',
-    detail, options: [...choices.map((a, i) => ({ label: labels[i],
+    open.length > 0 && labelled(locale, 'pending', '?', open.map(row => shortText(row.name || row.id, 60)).join('；')),
+    ignored.length > 0 && labelled(locale, 'ignored', '!', '\n' + ignored.join('\n')),
+    other && labelled(locale, 'other', '·', other),
+    labelled(locale, 'request', '»', draft.user_requirement, 180)].filter(Boolean).join('\n\n')
+  const question = { id: 'gxworks-design', header: words.header, detail,
+    question: words.ask || shortText(summary, 80) || labels.join(' / '),
+    options: [...choices.map((a, i) => ({ label: labels[i],
       description: shortText(a.description || a.generation_guide || '', 90) })),
-      { label: locale === 'zh' ? '修改方案' : 'Change the approach',
-        description: locale === 'zh' ? '返回设计阶段，补充要求或调整方案。' : 'Go back to design and add or adjust requirements.' }] }
+      { label: words.change || '✎', description: shortText(words.changeHint || '', 90) }] }
+  if (locale === 'neutral') delete question.header
   if (choices.length === 1) question.intent = { kind: 'plan-review', approve: labels[0], callId: exec.callId }
   // Ask the facts the draft still needs in the same window, so the answers
   // travel with the draft instead of arriving as an edited requirement.
   const parameterQuestions = requiredParameters.map(row => ({ id: parameterQuestionId(row),
-    header: '设计参数', question: String(row.name || row.id).trim() || String(row.id),
+    ...(words.params ? { header: words.params } : {}),
+    question: String(row.name || row.id).trim() || String(row.id),
     ...(row.note ? { detail: String(row.note) } : {}),
     ...(Array.isArray(row.options) && row.options.length
       ? { options: row.options.map(option => ({ label: String(option) })) } : {}) }))
