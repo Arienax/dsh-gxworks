@@ -123,14 +123,14 @@ const structureWords = {
 
 const windowWords = {
   zh: {
-    advantages: '优势', limits: '限制', instructions: '指令', forbidden: '禁用指令',
-    keys: '关键实现', userFixes: '用户指定', must: '必须', no: '禁用', anyOf: '任一',
+    advantages: '优势', limits: '限制', instructions: '拟定指令', forbidden: '排除',
+    keys: '关键实现', must: '必须', no: '禁用', anyOf: '任一',
     bindings: 'I/O', pending: '待确认参数', ignored: '原文未支持的标注（已忽略）', behaviors: '行为约束', operations: '操作意图', semantics: '执行语义',
     other: '其他', request: '原始需求（节选）', drop: '舍弃', guide: '实施要点',
   },
   en: {
-    advantages: 'Pros', limits: 'Cons', instructions: 'Instructions', forbidden: 'Forbidden',
-    keys: 'Key choices', userFixes: 'User requirement', must: 'must', no: 'forbid', anyOf: 'any of',
+    advantages: 'Pros', limits: 'Cons', instructions: 'Planned instructions', forbidden: 'Avoiding',
+    keys: 'Key choices', must: 'must', no: 'forbid', anyOf: 'any of',
     bindings: 'I/O', pending: 'Open questions', ignored: 'Claims the request did not support (dropped)', behaviors: 'behavior constraints', operations: 'operation intents', semantics: 'execution semantics',
     other: 'Other', request: 'Request (excerpt)', drop: 'drop', guide: 'How to build it',
   },
@@ -173,24 +173,6 @@ function semanticsText(rows, locale) {
   return parts.join(' ')
 }
 
-/** Constraints the user stated, in one short clause. */
-function userFixText(approach, locale) {
-  const words = wordsOf(locale)
-  const constraints = approach?.explicit_user_constraints
-  const contract = approach?.generation_contract
-  const required = [...instructionNames(constraints, 'required_opcodes'),
-    ...instructionNames(contract, 'required_opcodes')]
-  const forbidden = [...instructionNames(constraints, 'forbidden_opcodes'),
-    ...instructionNames(contract, 'forbidden_opcodes')]
-  const devices = [...instructionNames(constraints, 'required_devices'),
-    ...instructionNames(constraints, 'forbidden_devices')]
-  const parts = []
-  if (required.length) parts.push(`${words.must} ${[...new Set(required)].join('、')}`)
-  if (forbidden.length) parts.push(`${words.no} ${[...new Set(forbidden)].join('、')}`)
-  if (devices.length) parts.push([...new Set(devices)].join('、'))
-  return parts.join('；')
-}
-
 /** Which instructions this approach claims, so the human sees them before approving. */
 function approachDetail(approach, label, locale) {
   const words = wordsOf(locale)
@@ -200,15 +182,15 @@ function approachDetail(approach, label, locale) {
     ...instructionNames(contract, 'instruction_instances')])]
   const forbidden = instructionNames(contract, 'forbidden_opcodes')
   const keys = semanticsText(approach?.implementation_semantics, locale)
-  const fixes = userFixText(approach, locale)
+  // No "you asked for this" wording: every opcode here is the draft's own choice,
+  // whether it came from a claim about the request or from the model's planning.
   return [`### ${label}`, shortText(approach.description, 200),
     approach.pros && `${words.advantages}：${shortText(approach.pros, 140)}`,
     approach.cons && `${words.limits}：${shortText(approach.cons, 140)}`,
     opcodes.length > 0 && `${words.instructions}：${opcodes.join('、')}`,
     forbidden.length > 0 && `${words.forbidden}：${forbidden.join('、')}`,
     keys && `${words.keys}：${keys}`,
-    approach.generation_guide && `${words.guide}：${shortText(approach.generation_guide, 120)}`,
-    fixes && `${words.userFixes}：${fixes}`]
+    approach.generation_guide && `${words.guide}：${shortText(approach.generation_guide, 120)}`]
     .filter(Boolean).join('\n')
 }
 

@@ -556,7 +556,10 @@ test('the confirmation window stays short and speaks the user language', async (
   const english = structuredClone(draft)
   english.user_requirement = 'Sort three colours; D0 carries the colour code; several parts travel at once.'
   await reviewDesignShared(ctx, { callId: 'c2', agent: { session: {} } }, { ok: true, data: english })
-  assert.match(details[1], /Instructions：WSFL/u)
+  assert.match(details[1], /Planned instructions：WSFL/u)
   assert.match(details[1], /How to build it/u)
   assert.doesNotMatch(details[1], /\{"|"[a-z_]+":/u)
+  // The draft's own choices are never attributed to the user.
+  assert.doesNotMatch(details[0], /用户指定|原文要求/u)
+  assert.doesNotMatch(details[1], /User requirement|you asked/u)
 })
