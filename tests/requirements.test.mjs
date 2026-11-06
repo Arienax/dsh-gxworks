@@ -499,3 +499,25 @@ test('a generator failure reaches the model with its real message', async () => 
   assert.match(result.error, /完整用户消息/u)
   assert.doesNotMatch(result.error, /Tool batch execution failed/u)
 })
+
+test('a batch-capable host receives nested calls through its batch executor', async () => {
+  const batches = []
+  const tools = {
+    register(definition) { this.generator = definition },
+    get() { return { parameters: { properties: { implementation_review: { properties: {
+      selected: {}, alternatives: {}, limitations: {}, reviewed_instructions: {} } } } } } },
+    selectExecutor() { return undefined },
+    async execute(request) {
+      assert(Array.isArray(request.calls), 'batch hosts must receive calls[]')
+      batches.push(request.calls[0].name)
+      const data = request.calls[0].name.endsWith('get_current_project')
+        ? { project_id: 'p', target_mode: 'st', version_count: 1 } : {}
+      return { results: [{ id: request.calls[0].id, result: { isError: false, value: { structuredContent: { ok: true, data } } } }] }
+    },
+  }
+  apply({ on() {}, get: name => ({ tools, llm: { stream() {} } })[name] })
+  const result = await tools.generator.execute({ project_id: 'p' },
+    { agent: { session: { snapshotEvents: () => [message('x')] } }, signal: new AbortController().signal })
+  assert.deepEqual(batches, ['mcp__gxworks__get_current_project'])
+  assert.match(result.error, /Ladder 工程|版本/u)
+})

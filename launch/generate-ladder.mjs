@@ -472,8 +472,20 @@ export function registerLadderGenerator(ctx, quotes) {
       async function invoke(tool, input) {
         const name = 'mcp__gxworks__' + tool
         const callId = exec.callId + '-gx-' + (++calls)
-        const result = await tools.execute({ name, arguments: input, callId, rootCallId: exec.rootCallId || exec.callId,
-          parent: exec.token, signal: exec.signal, agent: exec.agent })
+        let result
+        // The installed host dispatches nested tool calls through its batch
+        // executor; calling the single-call signature there fails with
+        // "Tool batch execution failed". Use whichever the host exposes.
+        if (typeof tools.selectExecutor === 'function') {
+          const batch = await tools.execute({ calls: [{ id: callId, name, arguments: JSON.stringify(input) }],
+            agent: exec.agent, signal: exec.signal, toolSet: exec.toolSet })
+          const entry = batch?.results?.[0]
+          if (!entry?.result) throw Error('宿主批量执行没有返回 ' + tool + ' 的结果。')
+          result = entry.result
+        } else {
+          result = await tools.execute({ name, arguments: input, callId, rootCallId: exec.rootCallId || exec.callId,
+            parent: exec.token, signal: exec.signal, agent: exec.agent })
+        }
         for (const extra of result.additionalContexts || []) exec.deferContext(extra)
         if (result.isError) {
           const message = result.error.message
