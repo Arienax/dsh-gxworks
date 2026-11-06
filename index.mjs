@@ -16,6 +16,35 @@ function normalize(text) {
   return text.trim().replace(/\s+/gu, ' ')
 }
 
+/** Options the human picked in a question window, newest last. */
+function questionChoices(session) {
+  const events = session?.snapshotEvents?.() || []
+  const asked = new Set()
+  const choices = []
+  for (const event of events) {
+    if (event.type === 'tool/call' && event.data?.name === 'ask_user_question' && event.data.callId) {
+      asked.add(event.data.callId)
+      continue
+    }
+    const message = event.type === 'tool/result' ? event.data?.message : undefined
+    if (!message || message.isError || !asked.has(message.toolCallId)) continue
+    const text = (message.content || []).filter(block => block?.type === 'text').map(block => block.text).join('')
+    let payload
+    try { payload = JSON.parse(text) } catch { continue }
+    for (const answer of payload?.answers || []) {
+      for (const value of [...(answer.selected || []), ...(typeof answer.custom === 'string' ? [answer.custom] : [])]) {
+        if (typeof value === 'string' && value.trim()) choices.push(value.trim())
+      }
+    }
+  }
+  return choices
+}
+
+// A label needs no sentence punctuation: "方案A：…（推荐，直接生成）" is a choice.
+function chosenDirect(text = '') {
+  return /(?:直接|立即|马上)(?:帮我)?生成|跳过(?:方案|设计)?(?:对比|比较)?确认|direct\s*(?:mode|generation)|快捷生成/iu.test(text)
+}
+
 function quotesUserMessages(request, events) {
   let remaining = normalize(request)
   for (const event of events) {
@@ -78,13 +107,18 @@ export function apply(ctx) {
     }
     if (!exec.agent) return next()
     if (tool === 'create_project' && args.generation_mode === 'direct' &&
-        !explicitDirect(humanTexts(exec.agent.session).at(-1))) {
-      return { kind: 'deny', reason: '本次用户消息未选择 Direct。省略 generation_mode 继续默认 Design。用户可用“直接生成”或 /gxworks-direct 选择快速生成。' }
+        !explicitDirect(humanTexts(exec.agent.session).at(-1)) &&
+        !questionChoices(exec.agent.session).some(choice => chosenDirect(choice))) {
+      return { kind: 'deny', reason: '本次用户消息未选择 Direct。省略 generation_mode 继续默认 Design。用户可用“直接生成”、/gxworks-direct，或在确认窗口里选择直接生成。' }
     }
     if (['get_design_context', 'get_generation_context'].includes(tool) && args.user_requirement &&
         revisedRequirements.get(exec.agent.session) !== normalize(args.user_requirement) &&
         !quotesUserMessages(args.user_requirement, exec.agent.session.snapshotEvents())) {
-      return { kind: 'deny', reason: 'user_requirement 请逐字复制完整用户消息，多轮原文可按顺序换行拼接。模型提出的方案放入设计草稿，指令选型放入 implementation_review。' }
+      // Hand back the exact text: the model cannot guess the user's wording, and
+      // four retries in a row is worse than one long denial.
+      const verbatim = humanTexts(exec.agent.session).join('\n').slice(0, 6000)
+      return { kind: 'deny', reason: 'user_requirement 请逐字复制完整用户消息，多轮原文可按顺序换行拼接。'
+        + '模型提出的方案放入设计草稿，指令选型放入 implementation_review。\n逐字原文：\n' + verbatim }
     }
     if ((tool === 'create_program_candidate' || (['create_st_candidate', 'create_fbd_candidate',
         'create_sfc_candidate'].includes(tool) && args.operation === 'generate')) && !args.implementation_review) {

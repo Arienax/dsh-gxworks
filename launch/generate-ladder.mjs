@@ -456,7 +456,17 @@ export function registerLadderGenerator(ctx, quotes) {
       user_requirement: { type: 'string', description: '单条新需求或已确认 Design 省略；多轮合并只用相关的完整用户消息。' },
     } },
     output: { schema: { type: 'object' }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
+    // A thrown error reaches the model as "Tool batch execution failed", which
+    // says nothing about what went wrong. Report the real reason instead.
     async execute(args, exec) {
+      try {
+        return await this.run(args, exec)
+      } catch (error) {
+        if (exec.signal?.aborted) throw error
+        return { status: 'error', project_id: args.project_id, error: String(error?.message || error) }
+      }
+    },
+    async run(args, exec) {
       if (!exec.agent) throw Error('需要当前 Desktop 会话。')
       let calls = 0
       async function invoke(tool, input) {

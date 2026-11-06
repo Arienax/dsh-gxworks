@@ -464,3 +464,38 @@ test('the confirmation window shows the instructions the draft would use', async
   assert.match(detail, /指令：WSFL、WSFR、SFTL/u)
   assert.match(detail, /同色连续时不复位/u)
 })
+
+test('a direct-mode choice made in a question window counts as human intent', () => {
+  const asked = { type: 'tool/call', data: { name: 'ask_user_question', callId: 'c1' } }
+  const reply = { type: 'tool/result', data: { message: { toolCallId: 'c1', isError: false,
+    content: [{ type: 'text', text: JSON.stringify({ answers: [{ id: 'approach',
+      selected: ['方案A：移位寄存器追踪（推荐，直接生成）'] }] }) }] } } }
+  const direct = { generation_mode: 'direct' }
+  assert.equal(evaluate('create_project', direct, [message('按下面的 IO 表写程序。'), asked, reply]), 'allowed')
+  const other = { type: 'tool/call', data: { name: 'ask_user_question', callId: 'c2' } }
+  const compare = { type: 'tool/result', data: { message: { toolCallId: 'c2', isError: false,
+    content: [{ type: 'text', text: JSON.stringify({ answers: [{ id: 'mode', selected: ['先比较 2~3 个设计方案再生成'] }] }) }] } } }
+  assert.equal(evaluate('create_project', direct, [message('按下面的 IO 表写程序。'), other, compare]).kind, 'deny')
+})
+
+test('a rewritten requirement is denied with the verbatim text to copy', () => {
+  const original = 'FX3U。D0 分类，1~3 蓝，4~6 绿，7~9 灰。相邻两件之间 D0 回零一次。'
+  const decision = evaluate('get_design_context', { user_requirement: 'FX3U，D0 做颜色分类，蓝绿灰三路分拣。' },
+    [message(original)])
+  assert.equal(decision.kind, 'deny')
+  assert.match(decision.reason, /逐字原文/u)
+  assert(decision.reason.includes(original))
+})
+
+test('a generator failure reaches the model with its real message', async () => {
+  const tools = { register(definition) { this.generator = definition },
+    get() { return { parameters: { properties: { implementation_review: { properties: {
+      selected: {}, alternatives: {}, limitations: {}, reviewed_instructions: {} } } } } } },
+    async execute() { throw Error('请用相关的完整用户消息传入 user_requirement。') } }
+  apply({ on() {}, get: name => ({ tools, llm: { stream() {} } })[name] })
+  const result = await tools.generator.execute({ project_id: 'p' },
+    { agent: { session: { snapshotEvents: () => [message('原始需求')] } }, signal: new AbortController().signal })
+  assert.equal(result.status, 'error')
+  assert.match(result.error, /完整用户消息/u)
+  assert.doesNotMatch(result.error, /Tool batch execution failed/u)
+})
