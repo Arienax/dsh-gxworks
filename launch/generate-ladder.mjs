@@ -99,32 +99,146 @@ function answerValue(answer, id) {
   return selected.length === 1 && typeof selected[0] === 'string' ? selected[0].trim() : ''
 }
 
-/** Which instructions this approach claims, so the human sees them before approving. */
-function approachDetail(approach, label) {
-  const contract = approach?.generation_contract && typeof approach.generation_contract === 'object'
-    ? approach.generation_contract : {}
-  const instances = (Array.isArray(contract.instruction_instances) ? contract.instruction_instances : [])
-    .map(instance => typeof instance === 'string' ? instance : instance?.opcode)
-  const opcodes = [...new Set([...(contract.required_opcodes || []), ...instances].filter(Boolean))]
-  const forbidden = Array.isArray(contract.forbidden_opcodes) ? contract.forbidden_opcodes : []
-  return [`### ${label}`, approach.description,
-    approach.pros && `优势：${approach.pros}`, approach.cons && `限制：${approach.cons}`,
-    opcodes.length > 0 && '指令：' + opcodes.join('、'),
-    forbidden.length > 0 && '禁用指令：' + forbidden.join('、'),
-    approach.generation_guide,
-    ...['implementation_semantics', 'implementation_preferences', 'construction_plan', 'explicit_user_constraints']
-      .filter(key => approach[key] && Object.keys(approach[key]).length).map(key => JSON.stringify(approach[key]))]
-    .filter(Boolean).join('\n\n')
+// The window is read by a human, so it speaks the user's language and never
+// dumps the wire JSON: those fields are long, token-shaped, and unreadable.
+const structureWords = {
+  zh: {
+    self_hold: '自锁保持', set_reset_latch: '置位复位锁存', edge_trigger: '边沿触发',
+    state_initialization: '状态初始化', state_transition: '状态转移', state_comparison: '状态比较',
+    bit_state_machine: '位状态机', register_state_machine: '寄存器状态机',
+    data_register_counter: '数据寄存器计数', hardware_counter: '高速计数器', direct_logic: '直接逻辑',
+    analog_control: '模拟量控制', pulse_positioning: '脉冲定位', pid_control: 'PID 控制',
+    serial_communication: '串口通信', vfd_multi_speed: '变频器多段速',
+  },
+  en: {
+    self_hold: 'self-hold', set_reset_latch: 'set/reset latch', edge_trigger: 'edge trigger',
+    state_initialization: 'state initialization', state_transition: 'state transition',
+    state_comparison: 'state comparison', bit_state_machine: 'bit state machine',
+    register_state_machine: 'register state machine', data_register_counter: 'register counter',
+    hardware_counter: 'high-speed counter', direct_logic: 'direct logic', analog_control: 'analog control',
+    pulse_positioning: 'pulse positioning', pid_control: 'PID control',
+    serial_communication: 'serial communication', vfd_multi_speed: 'VFD multi-speed',
+  },
 }
 
-function droppedClaimLine(row) {
+const windowWords = {
+  zh: {
+    advantages: '优势', limits: '限制', instructions: '指令', forbidden: '禁用指令',
+    keys: '关键实现', userFixes: '用户指定', must: '必须', no: '禁用', anyOf: '任一',
+    bindings: 'I/O', pending: '待确认参数', ignored: '原文未支持的标注（已忽略）', behaviors: '行为约束', operations: '操作意图', semantics: '执行语义',
+    other: '其他', request: '原始需求（节选）', drop: '舍弃', guide: '实施要点',
+  },
+  en: {
+    advantages: 'Pros', limits: 'Cons', instructions: 'Instructions', forbidden: 'Forbidden',
+    keys: 'Key choices', userFixes: 'User requirement', must: 'must', no: 'forbid', anyOf: 'any of',
+    bindings: 'I/O', pending: 'Open questions', ignored: 'Claims the request did not support (dropped)', behaviors: 'behavior constraints', operations: 'operation intents', semantics: 'execution semantics',
+    other: 'Other', request: 'Request (excerpt)', drop: 'drop', guide: 'How to build it',
+  },
+}
+
+function localeOf(text) {
+  const source = String(text ?? '')
+  const cjk = (source.match(/[\u3400-\u9fff]/gu) || []).length
+  const ratio = cjk / Math.max(1, source.replace(/\s/gu, '').length)
+  return cjk >= 4 && ratio >= 0.15 ? 'zh' : 'en'
+}
+
+function wordsOf(locale) {
+  return windowWords[locale] || windowWords.en
+}
+
+function shortText(text, limit) {
+  const value = String(text ?? '').trim()
+  return value.length > limit ? value.slice(0, limit - 1) + '…' : value
+}
+
+function instructionNames(contract, key, property) {
+  const list = contract?.[key]
+  if (!Array.isArray(list)) return []
+  return [...new Set(list.map(item => typeof item === 'string' ? item : item?.[property || 'opcode'])
+    .filter(Boolean))].map(String)
+}
+
+/** "✓自锁保持 ✓边沿触发 ✗定时" — readable, and no field names leak. */
+function semanticsText(rows, locale) {
+  const table = structureWords[locale] || structureWords.en
+  const parts = []
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const values = [row?.value, ...(Array.isArray(row?.values) ? row.values : [])].filter(Boolean)
+    const names = values.map(value => table[value] || String(value).replace(/_/gu, ' '))
+    if (!names.length) continue
+    const mark = row.status === 'forbidden' ? '✗' : row.status === 'any_of' ? '±' : '✓'
+    parts.push(mark + names.join('/'))
+  }
+  return parts.join(' ')
+}
+
+/** Constraints the user stated, in one short clause. */
+function userFixText(approach, locale) {
+  const words = wordsOf(locale)
+  const constraints = approach?.explicit_user_constraints
+  const contract = approach?.generation_contract
+  const required = [...instructionNames(constraints, 'required_opcodes'),
+    ...instructionNames(contract, 'required_opcodes')]
+  const forbidden = [...instructionNames(constraints, 'forbidden_opcodes'),
+    ...instructionNames(contract, 'forbidden_opcodes')]
+  const devices = [...instructionNames(constraints, 'required_devices'),
+    ...instructionNames(constraints, 'forbidden_devices')]
+  const parts = []
+  if (required.length) parts.push(`${words.must} ${[...new Set(required)].join('、')}`)
+  if (forbidden.length) parts.push(`${words.no} ${[...new Set(forbidden)].join('、')}`)
+  if (devices.length) parts.push([...new Set(devices)].join('、'))
+  return parts.join('；')
+}
+
+/** Which instructions this approach claims, so the human sees them before approving. */
+function approachDetail(approach, label, locale) {
+  const words = wordsOf(locale)
+  const contract = approach?.generation_contract && typeof approach.generation_contract === 'object'
+    ? approach.generation_contract : {}
+  const opcodes = [...new Set([...instructionNames(contract, 'required_opcodes'),
+    ...instructionNames(contract, 'instruction_instances')])]
+  const forbidden = instructionNames(contract, 'forbidden_opcodes')
+  const keys = semanticsText(approach?.implementation_semantics, locale)
+  const fixes = userFixText(approach, locale)
+  return [`### ${label}`, shortText(approach.description, 200),
+    approach.pros && `${words.advantages}：${shortText(approach.pros, 140)}`,
+    approach.cons && `${words.limits}：${shortText(approach.cons, 140)}`,
+    opcodes.length > 0 && `${words.instructions}：${opcodes.join('、')}`,
+    forbidden.length > 0 && `${words.forbidden}：${forbidden.join('、')}`,
+    keys && `${words.keys}：${keys}`,
+    approach.generation_guide && `${words.guide}：${shortText(approach.generation_guide, 120)}`,
+    fixes && `${words.userFixes}：${fixes}`]
+    .filter(Boolean).join('\n')
+}
+
+/** One line for everything else the draft carries, instead of a JSON blob. */
+function otherSummary(review, locale) {
+  const words = wordsOf(locale)
+  const parts = []
+  const bindings = Array.isArray(review?.io_bindings) ? review.io_bindings : []
+  if (bindings.length) {
+    parts.push(words.bindings + ' ' + bindings.slice(0, 6).map(row =>
+      `${row.address} ${shortText(row.label, 16)}${row.active_level === 0 ? '(NC)' : ''}`.trim()).join('、'))
+  }
+  for (const [key, label] of [['behavior_constraints', words.behaviors], ['operation_intents', words.operations],
+    ['execution_semantics', words.semantics]]) {
+    const rows = review?.[key]
+    if (Array.isArray(rows) && rows.length) parts.push(`${label} ${rows.length}`)
+  }
+  if (review?.user_notes) parts.push(shortText(review.user_notes, 120))
+  return parts.join('；')
+}
+
+function droppedClaimLine(row, locale) {
+  const words = wordsOf(locale)
   const claim = row?.claim && typeof row.claim === 'object' ? row.claim : {}
   const text = [claim.summary, claim.claim, claim.text, claim.description]
     .map(value => typeof value === 'string' ? value.trim() : '').find(Boolean)
   const kind = [claim.operation, claim.target?.kind]
     .map(value => typeof value === 'string' ? value.trim() : '').find(Boolean)
   const label = [kind, text].filter(Boolean).join(' · ')
-  return '- ' + (label || String(row?.field || '标注'))
+  return '- ' + (label || String(row?.field || words.drop))
 }
 
 /**
@@ -146,17 +260,25 @@ export async function reviewDesign(ctx, exec, body) {
   if (!askUser) return { block: '当前宿主没有用户确认入口。可在 Desktop 打开此草稿继续确认。' }
   const session = exec.agent?.session
   designApprovals.delete(session)
-  const labels = choices.map((choice, i) => `方案 ${i + 1} · ${choice.name}`)
-  const { summary, approaches = [], io_table, parameters, ...spec } = draft.review
-  const detail = [summary, ...approaches.map((approach, i) => approachDetail(approach, labels[i])),
-    io_table?.length && '### I/O\n' + io_table.map(row => `- ${row.address} · ${row.label || ''}`).join('\n'),
-    parameters?.length && '### 参数\n' + parameters.map(row => `- ${row.name || row.id} · ${row.value ?? ''} ${row.unit || ''}`).join('\n'),
-    draft.dropped_claims?.length && '### 原文未支持的标注（已忽略）\n' + draft.dropped_claims.map(droppedClaimLine).join('\n'),
-    Object.keys(spec).length && '### 其他规格\n' + JSON.stringify(spec, null, 2),
-    '### 原始需求', draft.user_requirement].filter(Boolean).join('\n\n')
-  const question = { id: 'gxworks-design', header: '工程设计', question: '选择要按其生成程序的方案，或提出修改。',
-    detail, options: [...choices.map((a, i) => ({ label: labels[i], description: a.description || a.generation_guide || '按此方案生成' })),
-      { label: '修改方案', description: '返回设计阶段，补充要求或调整方案。' }] }
+  const locale = localeOf(draft.user_requirement)
+  const words = wordsOf(locale)
+  const labels = choices.map((choice, i) => `${locale === 'zh' ? '方案' : 'Option'} ${i + 1} · ${choice.name}`)
+  const { summary, approaches = [], parameters, ...rest } = draft.review
+  const other = otherSummary(rest, locale)
+  const open = (Array.isArray(parameters) ? parameters : []).filter(row => !String(row.value ?? '').trim())
+  const ignored = (draft.dropped_claims || []).map(row => droppedClaimLine(row, locale))
+  const detail = [shortText(summary, 200),
+    ...approaches.map((approach, i) => approachDetail(approach, labels[i], locale)),
+    open.length > 0 && `${words.pending}：` + open.map(row => shortText(row.name || row.id, 60)).join('；'),
+    ignored.length > 0 && `${words.ignored}\n` + ignored.join('\n'),
+    other && `${words.other}：${other}`,
+    `${words.request}：${shortText(draft.user_requirement, 180)}`].filter(Boolean).join('\n\n')
+  const question = { id: 'gxworks-design', header: locale === 'zh' ? '工程设计' : 'Design review',
+    question: locale === 'zh' ? '选择要按其生成程序的方案，或提出修改。' : 'Pick the approach to implement, or ask for changes.',
+    detail, options: [...choices.map((a, i) => ({ label: labels[i],
+      description: shortText(a.description || a.generation_guide || '', 90) })),
+      { label: locale === 'zh' ? '修改方案' : 'Change the approach',
+        description: locale === 'zh' ? '返回设计阶段，补充要求或调整方案。' : 'Go back to design and add or adjust requirements.' }] }
   if (choices.length === 1) question.intent = { kind: 'plan-review', approve: labels[0], callId: exec.callId }
   // Ask the facts the draft still needs in the same window, so the answers
   // travel with the draft instead of arriving as an edited requirement.

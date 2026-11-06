@@ -521,3 +521,42 @@ test('a batch-capable host receives nested calls through its batch executor', as
   assert.deepEqual(batches, ['mcp__gxworks__get_current_project'])
   assert.match(result.error, /Ladder 工程|版本/u)
 })
+
+test('the confirmation window stays short and speaks the user language', async () => {
+  const details = []
+  const ctx = { get: name => name === 'userQuestions' ? { ask: async ({ questions }) => {
+    details.push(questions[0].detail)
+    return { answers: questions.map((question, index) => index === 0
+      ? { id: question.id, selected: [question.options[0].label] }
+      : { id: question.id, custom: '保留在途物料' }) }
+  } } : undefined }
+  const approach = { approach_id: 'q', name: '整字移位追踪', description: '用整字移位链跟踪在途物料',
+    generation_guide: '先建自锁，再按颜色生成占用与动作梯级，最后统一输出',
+    implementation_semantics: [{ kind: 'structure', status: 'required', value: 'self_hold' },
+      { kind: 'structure', status: 'required', value: 'edge_trigger' }],
+    generation_contract: { required_opcodes: ['WSFL'], forbidden_opcodes: ['OUT'], instruction_instances: [] },
+    pros: '状态清晰', cons: '需按节拍重算' }
+  const draft = { draft_id: 'd7', user_requirement: '三色物料分拣，D0 分类，连续多件需要分别追踪到站并动作。',
+    review: { summary: '整字移位追踪', approaches: [approach],
+      io_table: [{ address: 'X1', label: '启动' }],
+      io_bindings: [{ address: 'X1', label: '启动' }, { address: 'X3', label: '停止', active_level: 0 }],
+      parameters: [{ id: 'stop_wip', name: '停机后在途物料怎样处理', required: true, value: '' }],
+      behavior_constraints: [{ id: 'b1' }], user_notes: '' },
+    issues: { errors: [] } }
+  const reviewed = await reviewDesignShared(ctx, { callId: 'c1', agent: { session: {} } }, { ok: true, data: draft })
+  assert.equal(reviewed.data.approved, true)
+  const detail = details[0]
+  assert.doesNotMatch(detail, /\{"|"[a-z_]+":/u, 'no wire JSON in the window')
+  assert.match(detail, /指令：WSFL/u)
+  assert.match(detail, /关键实现：✓自锁保持 ✓边沿触发/u)
+  assert.match(detail, /待确认参数：停机后在途物料怎样处理/u)
+  assert.match(detail, /I\/O X1 启动、X3 停止\(NC\)/u)
+  assert(detail.length < 1200, 'window stays short: ' + detail.length)
+
+  const english = structuredClone(draft)
+  english.user_requirement = 'Sort three colours; D0 carries the colour code; several parts travel at once.'
+  await reviewDesignShared(ctx, { callId: 'c2', agent: { session: {} } }, { ok: true, data: english })
+  assert.match(details[1], /Instructions：WSFL/u)
+  assert.match(details[1], /How to build it/u)
+  assert.doesNotMatch(details[1], /\{"|"[a-z_]+":/u)
+})
