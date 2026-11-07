@@ -14,7 +14,10 @@ export function humanTexts(session) {
 }
 
 export function explicitDirect(text = '') {
-  return /(?:^|[\n。！？；，,.!;]\s*)(?:请|请你|这次|本次)?\s*(?:直接(?:帮我)?生成|跳过(?:方案|设计)确认|使用\s*direct\s*模式|(?:use\s+)?direct\s+(?:mode|generation)|\/gxworks-direct)(?:[\s，。,.!！]|程序|梯形图|$)/iu.test(text)
+  // Leading punctuation boundary keeps "不要直接生成" out; the trailing side
+  // must stay open because the phrase runs straight into the next clause in
+  // natural requests ("直接生成三菱 FX3U PLC 梯形图程序").
+  return /(?:^|[\n。！？；，,.!;：:\s])(?:请|请你|这次|本次)?\s*(?:直接(?:帮我)?生成|跳过(?:方案|设计)确认|使用\s*direct\s*模式|(?:use\s+)?direct\s+(?:mode|generation)|\/gxworks-direct)/iu.test(text)
 }
 
 // Models stream tool arguments as raw text. One bare quote or newline inside an
