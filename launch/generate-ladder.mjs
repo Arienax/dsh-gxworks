@@ -1,5 +1,12 @@
 // The local MCP owns engineering facts and validation. Desktop owns its model.
 export const generatorName = 'gxworks_generate_ladder'
+export const nestedCallIds = new Set()
+
+export function isNestedGeneratorCall(exec) {
+  return exec?.parent !== undefined ||
+    (typeof exec?.callId === 'string' && nestedCallIds.has(exec.callId)) ||
+    (typeof exec?.id === 'string' && nestedCallIds.has(exec.id))
+}
 
 export function humanTexts(session) {
   return session.snapshotEvents().filter(e => e.type === 'user/message' && e.data.source?.kind === 'user')
@@ -147,10 +154,11 @@ function localeOf(text) {
   const cjk = (source.match(/[\u3400-\u9fff]/gu) || []).length
   const kana = (source.match(/[\u3040-\u30ff]/gu) || []).length
   const hangul = (source.match(/[\uac00-\ud7af]/gu) || []).length
-  const words = Math.max(1, source.replace(/\s/gu, '').length)
   if (kana > 0 || hangul > 0) return 'neutral'
   if (/[\u0400-\u04ff\u0600-\u06ff\u0e00-\u0e7f]/u.test(source)) return 'neutral'
-  return cjk >= 4 && cjk / words >= 0.15 ? 'zh' : 'en'
+  if (cjk > 0) return 'zh'
+  if (/[\u00c0-\u024f\u1e00-\u1eff]/u.test(source)) return 'neutral'
+  return 'en'
 }
 
 function wordsOf(locale) {
@@ -303,12 +311,36 @@ export async function reviewDesign(ctx, exec, body) {
   const item = answer.answers.find(entry => entry.id === question.id)
   const index = item?.custom === undefined && item?.selected?.length === 1 ? labels.indexOf(item.selected[0]) : -1
   const parameterAnswers = {}
-  const unanswered = []
+  let newlyAnswered = 0
   for (const row of requiredParameters) {
     const value = answerValue(answer, parameterQuestionId(row))
-    if (value) parameterAnswers[row.id] = value
-    else unanswered.push(String(row.name || row.id))
+    if (value) {
+      parameterAnswers[row.id] = value
+      newlyAnswered += 1
+    }
   }
+  // If the user selected an approach and answered part of the required parameters,
+  // ask only the remaining questions without discarding the answers already given.
+  while (index >= 0 && !cancelled && newlyAnswered > 0) {
+    const remainingQuestions = parameterQuestions.filter((_, i) => !parameterAnswers[requiredParameters[i].id])
+    if (!remainingQuestions.length) break
+    newlyAnswered = 0
+    try {
+      const followUp = await askUser.ask({ questions: remainingQuestions, agent: exec.agent, signal: exec.signal })
+      for (const row of requiredParameters) {
+        if (parameterAnswers[row.id]) continue
+        const value = answerValue(followUp, parameterQuestionId(row))
+        if (value) {
+          parameterAnswers[row.id] = value
+          newlyAnswered += 1
+        }
+      }
+    } catch (error) {
+      if (error.code !== 'ASK_CANCELLED') throw error
+      cancelled = true
+    }
+  }
+  const unanswered = requiredParameters.filter(row => !parameterAnswers[row.id]).map(row => String(row.name || row.id))
   const answered = Object.keys(parameterAnswers).length > 0
   if (cancelled && index < 0) {
     return { data: { approved: false,
@@ -597,20 +629,25 @@ export function registerLadderGenerator(ctx, quotes) {
       let calls = 0
       async function invoke(tool, input) {
         const name = 'mcp__gxworks__' + tool
-        const callId = exec.callId + '-gx-' + (++calls)
+        const callId = (exec.callId || 'gx') + '-gx-' + (++calls)
+        nestedCallIds.add(callId)
         let result
         // The installed host dispatches nested tool calls through its batch
         // executor; calling the single-call signature there fails with
         // "Tool batch execution failed". Use whichever the host exposes.
-        if (typeof tools.selectExecutor === 'function') {
-          const batch = await tools.execute({ calls: [{ id: callId, name, arguments: JSON.stringify(input) }],
-            agent: exec.agent, signal: exec.signal, toolSet: exec.toolSet })
-          const entry = batch?.results?.[0]
-          if (!entry?.result) throw Error('宿主批量执行没有返回 ' + tool + ' 的结果。')
-          result = entry.result
-        } else {
-          result = await tools.execute({ name, arguments: input, callId, rootCallId: exec.rootCallId || exec.callId,
-            parent: exec.token, signal: exec.signal, agent: exec.agent })
+        try {
+          if (typeof tools.selectExecutor === 'function') {
+            const batch = await tools.execute({ calls: [{ id: callId, name, arguments: JSON.stringify(input) }],
+              parent: exec.token, agent: exec.agent, signal: exec.signal, toolSet: exec.toolSet })
+            const entry = batch?.results?.[0]
+            if (!entry?.result) throw Error('宿主批量执行没有返回 ' + tool + ' 的结果。')
+            result = entry.result
+          } else {
+            result = await tools.execute({ name, arguments: input, callId, rootCallId: exec.rootCallId || exec.callId,
+              parent: exec.token, signal: exec.signal, agent: exec.agent })
+          }
+        } finally {
+          nestedCallIds.delete(callId)
         }
         for (const extra of result.additionalContexts || []) exec.deferContext(extra)
         if (result.isError) {
@@ -632,7 +669,10 @@ export function registerLadderGenerator(ctx, quotes) {
       if (!project.has_confirmed_spec) {
         const texts = humanTexts(exec.agent.session)
         raw = args.user_requirement || (texts.length === 1 ? texts[0] : undefined)
-        if (!raw || !quotes(raw, exec.agent.session.snapshotEvents())) throw Error('请用相关的完整用户消息传入 user_requirement。')
+        if (!raw || (revisedRequirements.get(exec.agent.session) !== normalizeRequirement(raw) &&
+            !quotes(raw, exec.agent.session.snapshotEvents()))) {
+          throw Error('请用相关的完整用户消息传入 user_requirement。')
+        }
       }
       // A repair request otherwise costs a full round trip through the outer
       // model, which then rewrites the draft by hand and loses the analysis.
@@ -640,42 +680,55 @@ export function registerLadderGenerator(ctx, quotes) {
       async function repairDesign(state) {
         const targets = Array.isArray(state.repair_targets) ? state.repair_targets : []
         if (!targets.length || !state.repair_id || !state.analysis_id) return
+        const targetByPath = new Map(targets.map(target => [target.path, target]))
         const submission = { name: 'submit_design_repairs',
           description: '只提交 repair_targets 列出的字段修正，其余草稿保持不变。',
           parameters: { type: 'object', required: ['repairs'], additionalProperties: false, properties: {
-            repairs: { type: 'array', minItems: 1, maxItems: targets.length, items: { type: 'object',
-              required: ['path', 'value_json'], additionalProperties: false, properties: {
+            repairs: { type: 'array', minItems: targets.length, maxItems: targets.length, items: { type: 'object',
+              required: ['path', 'value'], additionalProperties: false, properties: {
                 path: { type: 'string', enum: targets.map(target => target.path) },
-                value_json: { type: 'string', description: '修正后的值，用 JSON 文本表示；要删除该条时写 []。' } } } } } } }
+                value: {
+                  anyOf: [{ type: 'array' }, { type: 'object' }, { type: 'string' }, { type: 'number' }, { type: 'boolean' }, { type: 'null' }],
+                  description: '修正后的 JSON 值；删除 claim 条目时填 []，移除禁止字段时填 null。',
+                } } } } } } }
         const fixed = await modelResponse(llm, exec,
-          '只调用 submit_design_repairs。按 targets 的错误修正所列字段；能引用的证据必须逐字来自 request。'
-          + '原文没有的地址、指令或事实不要写成证据，删掉该条即可。不要重写整份分析。',
+          '只调用 submit_design_repairs。按 targets 的错误逐一修正全部所列字段；能引用的证据必须逐字来自 request。'
+          + '原文没有的地址、指令或事实不要写成证据，可设 inferred: true 或删掉未锚定条目。不要重写整份分析。',
           JSON.stringify({ request: raw, targets }), metrics, 'design:repair', submission)
         const rows = fixed.value?.repairs
         if (!Array.isArray(rows) || !rows.length) return
-        const repairs = []
+        const byPath = new Map()
         for (const row of rows) {
-          if (!row || !targets.some(target => target.path === row.path)) continue
-          try { repairs.push({ path: row.path, value: JSON.parse(String(row.value_json ?? '')) }) } catch { /* skip a broken field */ }
+          if (!row || !targetByPath.has(row.path) || byPath.has(row.path)) continue
+          const target = targetByPath.get(row.path)
+          let value = Object.hasOwn(row, 'value') ? row.value : undefined
+          if (value === undefined && Object.hasOwn(row, 'value_json')) {
+            try { value = JSON.parse(String(row.value_json ?? '')) } catch { continue }
+          } else if (typeof value === 'string' && (target.mode === 'claim' || target.mode === 'remove')) {
+            try { value = JSON.parse(value) } catch { continue }
+          }
+          byPath.set(row.path, { path: row.path, value })
         }
-        if (!repairs.length) return
-        return invoke('propose_design_plan', { analysis_id: state.analysis_id, repair_id: state.repair_id, repairs })
+        if (byPath.size !== targets.length) return
+        return invoke('propose_design_plan', { analysis_id: state.analysis_id, repair_id: state.repair_id, repairs: [...byPath.values()] })
       }
       if (args.stage === 'design' && !project.has_confirmed_spec) {
         const { content: design } = await readDocument(invoke, 'get_design_context', {
-          user_requirement: raw, instruction_details: true })
-        const input = contextText({ request: raw, knowledge: design.knowledge, instruction_research: design.instruction_research })
+          user_requirement: raw })
+        const input = contextText({ request: raw, knowledge: design.knowledge })
         if (!design.analysis_schema?.properties?.approaches) throw Error('后端未交付 Web Design 草稿结构。')
         const submission = { name: 'submit_design_plan', parameters: design.analysis_schema,
           description: '按 Web Design 结构提交规格草稿。把工艺事实与备选实现分开，证据须逐字来自用户。' }
-        const analysis = await modelResponse(llm, exec, [design.analysis_instructions, manualFormat, designSelection].join('\n'), input, metrics, 'design', submission)
+        const analysis = await modelResponse(llm, exec, [design.analysis_instructions, designSelection].join('\n'), input, metrics, 'design', submission)
         if (analysis.error) return { status: 'repair_required', error: analysis.error, draft: analysis.draft,
           project_id: project.project_id, analysis_id: design.analysis_id, model_calls: metrics.length, metrics,
           next_actions: [{ tool: 'propose_design_plan', instruction: '整理返回的草稿，沿用 analysis_id 提交。' }] }
         let proposal = await invoke('propose_design_plan', { analysis_id: design.analysis_id, analysis: analysis.value })
         if (proposal.status === 'repair_required') {
-          const repaired = await repairDesign(proposal)
-          if (repaired && !repaired.status) proposal = repaired
+          try {
+            const repaired = await repairDesign(proposal)
+            if (repaired && !repaired.status) proposal = repaired
+          } catch { /* retain the unrepaired proposal and its repair_targets */ }
         }
         // The post-execute hook ignores nested calls, so the window belongs here:
         // waiting on the human must not hold up the rest of the model's batch.
@@ -744,7 +797,7 @@ export function registerLadderGenerator(ctx, quotes) {
       try { program = wireLadder(reply.ladder) }
       catch (error) { return recover(String(error.message), reply) }
       const example = reply.io_example || reply.implementation_review?.io_example
-      const save = () => invoke('create_program_candidate', { ladder: program,
+      const save = (candidateLadder = program) => invoke('create_program_candidate', { ladder: candidateLadder,
         generation_context_id: doc.generation_context_id, implementation_review: review, ...(example ? { io_example: example } : {}) })
       async function saveWithBehaviorCheck() {
         try { return await save() } catch (error) {
@@ -781,8 +834,17 @@ export function registerLadderGenerator(ctx, quotes) {
           if (!Array.isArray(edits) || !edits.length || !edits.every(e => e && indexes.includes(e.index) && Array.isArray(e.networks)) ||
               new Set(edits.map(e => e.index)).size !== edits.length) throw error
           const byIndex = new Map(edits.map(e => [e.index, e.networks]))
-          body.r = body.r.flatMap((row, i) => byIndex.get(i) || [row])
-          return save()
+          const patched = structuredClone(program)
+          const patchedBody = patched.result?.program || patched
+          patchedBody.r = patchedBody.r.flatMap((row, i) => byIndex.get(i) || [row])
+          try {
+            const savedPatched = await save(patched)
+            program = patched
+            return savedPatched
+          } catch (patchError) {
+            if (patchError.detail?.code === 'CANDIDATE_BEHAVIOR_MISMATCH') program = patched
+            throw patchError
+          }
         }
       }
       // No chat notice here: the host persists unknown event types without the

@@ -1,5 +1,5 @@
-import { designApprovals, explicitDirect, generatorName, humanTexts, registerLadderGenerator,
-  reviewDesign, revisedRequirements } from './launch/generate-ladder.mjs'
+import { designApprovals, explicitDirect, generatorName, humanTexts, isNestedGeneratorCall,
+  registerLadderGenerator, reviewDesign, revisedRequirements } from './launch/generate-ladder.mjs'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -16,14 +16,18 @@ function normalize(text) {
   return text.trim().replace(/\s+/gu, ' ')
 }
 
-/** Options the human picked in a question window, newest last. */
-function questionChoices(session) {
-  const events = session?.snapshotEvents?.() || []
-  const asked = new Set()
-  const choices = []
+/** Options and custom answers the human gave in question windows, newest last. */
+function questionAnswerSteps(events) {
+  const asked = new Map()
+  const stepsByEvent = new Map()
   for (const event of events) {
     if (event.type === 'tool/call' && event.data?.name === 'ask_user_question' && event.data.callId) {
-      asked.add(event.data.callId)
+      let questions = []
+      try {
+        const parsed = typeof event.data.arguments === 'string' ? JSON.parse(event.data.arguments) : event.data.arguments
+        questions = Array.isArray(parsed?.questions) ? parsed.questions : []
+      } catch { /* ignore malformed arguments */ }
+      asked.set(event.data.callId, questions)
       continue
     }
     const message = event.type === 'tool/result' ? event.data?.message : undefined
@@ -31,13 +35,30 @@ function questionChoices(session) {
     const text = (message.content || []).filter(block => block?.type === 'text').map(block => block.text).join('')
     let payload
     try { payload = JSON.parse(text) } catch { continue }
+    const questions = asked.get(message.toolCallId) || []
+    const answerSteps = []
     for (const answer of payload?.answers || []) {
+      const prompt = questions.find(q => q && q.id === answer.id)?.question
       for (const value of [...(answer.selected || []), ...(typeof answer.custom === 'string' ? [answer.custom] : [])]) {
-        if (typeof value === 'string' && value.trim()) choices.push(value.trim())
+        if (typeof value === 'string' && value.trim()) {
+          const clean = value.trim()
+          const variants = [clean]
+          if (typeof prompt === 'string' && prompt.trim()) {
+            variants.push(`${prompt.trim()}：${clean}`, `${prompt.trim()}: ${clean}`)
+          }
+          answerSteps.push(variants)
+        }
       }
     }
+    if (answerSteps.length) stepsByEvent.set(event, answerSteps)
   }
-  return choices
+  return stepsByEvent
+}
+
+function questionChoices(session) {
+  const events = session?.snapshotEvents?.() || []
+  const byEvent = questionAnswerSteps(events)
+  return [...byEvent.values()].flat(2)
 }
 
 // A label needs no sentence punctuation: "方案A：…（推荐，直接生成）" is a choice.
@@ -46,14 +67,32 @@ function chosenDirect(text = '') {
 }
 
 function quotesUserMessages(request, events) {
-  let remaining = normalize(request)
+  const start = normalize(request)
+  if (!start) return false
+  const answerMap = questionAnswerSteps(events)
+  const steps = []
   for (const event of events) {
-    if (event.type !== 'user/message' || event.data?.source?.kind !== 'user') continue
-    const original = normalize(event.data.content.filter(block => block.type === 'text')
-      .map(block => block.text).join('\n'))
-    if (!original) continue
-    if (remaining === original) return true
-    if (remaining.startsWith(original + ' ')) remaining = remaining.slice(original.length + 1)
+    if (event.type === 'user/message' && event.data?.source?.kind === 'user') {
+      const original = normalize((event.data.content || []).filter(block => block.type === 'text')
+        .map(block => block.text).join('\n'))
+      if (original) steps.push([original])
+    } else if (answerMap.has(event)) {
+      for (const variants of answerMap.get(event)) {
+        const normalized = variants.map(normalize).filter(Boolean)
+        if (normalized.length) steps.push(normalized)
+      }
+    }
+  }
+  let candidates = new Set([start])
+  for (const options of steps) {
+    const next = new Set(candidates)
+    for (const remaining of candidates) {
+      for (const segment of options) {
+        if (remaining === segment) return true
+        if (remaining.startsWith(segment + ' ')) next.add(remaining.slice(segment.length + 1))
+      }
+    }
+    candidates = next
   }
   return false
 }
@@ -68,7 +107,9 @@ export function apply(ctx) {
   const supportsGenerator = Boolean(ctx.get?.('llm')?.stream && ctx.get?.('tools')?.register)
   if (supportsGenerator) registerLadderGenerator(ctx, quotesUserMessages)
   ctx.on('tools/post-execute', async (exec, result, next) => {
-    if (result.isError || !exec.agent) return next()
+    // Nested calls made inside gxworks_generate_ladder (including through batch
+    // executors that omit exec.parent) must never re-enter outer review or routing.
+    if (result.isError || !exec.agent || isNestedGeneratorCall(exec)) return next()
     if (supportsGenerator && ['mcp__gxworks__create_project', 'mcp__gxworks__confirm_design_plan'].includes(exec.name)) {
       const decision = await next()
       const body = result.value?.structuredContent
@@ -105,7 +146,7 @@ export function apply(ctx) {
         return { kind: 'deny', reason: '请先用 propose_design_plan({}) 展示草稿，并使用用户在确认窗口中选择的方案。' }
       }
     }
-    if (!exec.agent) return next()
+    if (!exec.agent || isNestedGeneratorCall(exec)) return next()
     if (tool === 'create_project' && args.generation_mode === 'direct' &&
         !explicitDirect(humanTexts(exec.agent.session).at(-1)) &&
         !questionChoices(exec.agent.session).some(choice => chosenDirect(choice))) {
