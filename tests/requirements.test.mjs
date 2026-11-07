@@ -26,9 +26,15 @@ test('only complete human messages in chronological order become requirements', 
 })
 
 test('new designs require a review while ordinary engineering calls pass through', () => {
-  for (const mode of ['program', 'st', 'sfc', 'fbd']) {
-    assert.equal(evaluate('create_' + mode + '_candidate', { operation: 'generate' }, []).kind, 'deny')
+  // The backend contract (generation_tools.py) only lists implementation_review
+  // in required_fields for Ladder candidates and new-FBD generation. ST and SFC
+  // stay optional there; the MCP server's check_review rejects with diagnostics.
+  for (const tool of ['create_program_candidate', 'create_fbd_candidate']) {
+    assert.equal(evaluate(tool, { operation: 'generate' }, []).kind, 'deny')
   }
+  assert.equal(evaluate('create_st_candidate', { operation: 'generate' }, []), 'allowed')
+  assert.equal(evaluate('create_sfc_candidate', { operation: 'generate' }, []), 'allowed')
+  assert.equal(evaluate('create_fbd_candidate', { operation: 'edit' }, []), 'allowed')
   assert.equal(evaluate('create_fbd_candidate', { operation: 'import' }, []), 'allowed')
   assert.equal(evaluate('get_generation_context', {}, []), 'allowed')
 })

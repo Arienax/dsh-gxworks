@@ -168,8 +168,14 @@ export function apply(ctx) {
       return { kind: 'deny', reason: 'user_requirement 请逐字复制完整用户消息，多轮原文可按顺序换行拼接。'
         + '模型提出的方案放入设计草稿，指令选型放入 implementation_review。\n逐字原文：\n' + verbatim }
     }
-    if ((tool === 'create_program_candidate' || (['create_st_candidate', 'create_fbd_candidate',
-        'create_sfc_candidate'].includes(tool) && args.operation === 'generate')) && !args.implementation_review) {
+    // Mirror the backend contract exactly: only Ladder candidates and new-FBD
+    // generation carry implementation_review in output_contract.required_fields
+    // (generation_tools.py). ST and SFC generation leave the review optional;
+    // the MCP server's check_review rejects with missing_families diagnostics
+    // and next_actions when one is genuinely needed.
+    if ((tool === 'create_program_candidate' ||
+         (tool === 'create_fbd_candidate' && args.operation === 'generate')) &&
+        !args.implementation_review) {
       return { kind: 'deny', reason: '请先用用户原文取得生成上下文，按实际 CPU 查证相关指令并完成全部分页，比较后附上 implementation_review。' }
     }
     return next()
