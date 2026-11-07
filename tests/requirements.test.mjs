@@ -3,6 +3,7 @@ import test from 'node:test'
 import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import { apply } from '../index.mjs'
+import { parseJsonText, pickSubmission, reviewDesign as reviewDesignShared } from '../launch/generate-ladder.mjs'
 
 function evaluate(tool, args, messages) {
   let hook
@@ -118,8 +119,7 @@ test(`Direct preserves the program and reads all pages; degraded=${degraded}; no
       } else {
         assert(name.endsWith('create_program_candidate')); saved = args
         assert.deepEqual(JSON.parse(JSON.stringify(args)), args, 'Desktop arguments must contain no undefined values')
-        assert.equal(notices.length, 1, 'notify before backend validation starts')
-        data = { candidate_id: 'example', version_id: 'v0001', fragment_review: fragmentReview,
+          data = { candidate_id: 'example', version_id: 'v0001', fragment_review: fragmentReview,
           implementation_review: { assumptions: [{ condition: 'Model implementation note' }] }, delivery: { preferred_format: 'gxw',
           actual_format: degraded ? 'csv' : 'gxw', degraded, reason: degraded ? 'project readback mismatch' : null } }
       }
@@ -156,8 +156,8 @@ test(`Direct preserves the program and reads all pages; degraded=${degraded}; no
   } }
   apply({ on() {}, get: name => ({ tools, llm })[name] })
   const session = { snapshotEvents: () => [message(raw)], append: (type, data, options) => {
-    assert.equal(generations, 1, 'notify after generation')
     notices.push({ type, data, options })
+    assert.fail('the generator must not append session events')
   }, requestHeader: () => ({
     config: { provider: 'selected-provider', model: 'current-model' } }) }
   const result = await tools.generator.execute({ project_id: 'p' }, { agent: { session }, signal: new AbortController().signal, callId: 'test' })
@@ -165,7 +165,7 @@ test(`Direct preserves the program and reads all pages; degraded=${degraded}; no
   assert.equal(result.model_calls, 1)
   assert.deepEqual(result.candidate.fragment_review, fragmentReview, 'uncertain analysis stays advisory without a repair request')
   assert.deepEqual(result.implementation_review.assumptions, [{ condition: 'Model implementation note' }], 'retain model notes without source labels')
-  assert.deepEqual(notices, [{ type: 'dsh-gxworks/verification-started', data: {}, options: { ignorable: true } }])
+  assert.deepEqual(notices, [], 'generation must leave the session log untouched')
   assert.equal(result.status, degraded ? 'delivery_degraded' : undefined)
   if (degraded) assert.deepEqual(result.delivery, result.candidate.delivery)
   assert.deepEqual(JSON.parse(JSON.stringify(result)), result, 'Desktop result must contain no undefined values')
@@ -207,7 +207,6 @@ for (const fixed of [true, false]) test('An independent counterexample gets one 
             manual: { knowledge: ['original manual content'] } } } }
       } else {
         assert(name.endsWith('create_program_candidate')); submissions.push(structuredClone(args))
-        assert.equal(notices.length, 1, 'repair must not add another notice')
         if (submissions.length === 1 || !fixed) {
           const failure = { ok: false, error: { code: 'CANDIDATE_BEHAVIOR_MISMATCH', behavior_result: ioResult } }
           return fixed ? { isError: true, error: { message: JSON.stringify(failure) } } : { value: { structuredContent: failure } }
@@ -249,7 +248,7 @@ for (const fixed of [true, false]) test('An independent counterexample gets one 
   const result = await tools.generator.execute({ project_id: 'p' }, { agent: { session }, signal: new AbortController().signal })
   assert.equal(reads, 1)
   assert.deepEqual(calls, ['submit_ladder', 'repair_networks'])
-  assert.deepEqual(notices, ['dsh-gxworks/verification-started'])
+  assert.deepEqual(notices, [])
   assert.equal(submissions.length, 2)
   assert.deepEqual(submissions[1], { ...submissions[0], ladder: { r: original.map((row, index) => index === 1 ? next : row) } })
   assert.deepEqual(submissions[0].implementation_review.reviewed_instructions, ['BMOV'])
@@ -288,4 +287,565 @@ test('verification notice renders in the chat without becoming a model message',
     assert.equal(rendered.props.role, 'status')
     assert.equal(rendered.text, dictionaries[language].started)
   }
+})
+
+test('a draft that only lacks user facts still opens the window and submits the answers', async () => {
+  const hooks = {}
+  let asked
+  apply({ on: (name, callback) => { hooks[name] = callback },
+    get: name => name === 'userQuestions' ? { ask: async request => {
+      asked = request.questions
+      const [choice, parameter] = request.questions
+      return { answers: [
+        { id: choice.id, selected: [choice.options[0].label] },
+        { id: parameter.id, selected: ['保留在途物料'] }] }
+    } } : undefined })
+  const session = {}
+  const draft = { draft_id: 'd2', user_requirement: 'D0 件间回 0。',
+    review: { summary: '整字移位历史', approaches: [{ name: '整字移位循环', approach_id: 'word' }],
+      parameters: [{ id: 'stop_wip', name: '停机后在途物料怎样处理', required: true, value: '', options: ['保留在途物料', '清除'] }] },
+    issues: { errors: [{ code: 'required_parameter_missing', path: '$.parameters[0].value', message: '必填参数尚未填写' }] } }
+  const result = { isError: false, value: { structuredContent: { ok: true, data: draft } } }
+  const decision = (await hooks['tools/post-execute']({ name: 'mcp__gxworks__propose_design_plan',
+    agent: { session } }, result, async () => ({ kind: 'accept' }))).value.structuredContent.data
+  assert.deepEqual(asked.map(question => question.id), ['gxworks-design', 'gxworks-parameter-stop_wip'])
+  assert.deepEqual(asked[1].options, [{ label: '保留在途物料' }, { label: '清除' }])
+  assert.equal(decision.approved, true)
+  assert.deepEqual(decision.next_actions[0].arguments, { draft_id: 'd2', approach_id: 'word',
+    parameter_answers: { stop_wip: '保留在途物料' } })
+  assert.equal(hooks['tools/pre-execute']({ name: 'mcp__gxworks__confirm_design_plan',
+    arguments: decision.next_actions[0].arguments, agent: { session } }, () => 'allowed'), 'allowed')
+})
+
+test('a draft the model must still fix never reaches the human', async () => {
+  const hooks = {}
+  let asked = 0
+  apply({ on: (name, callback) => { hooks[name] = callback },
+    get: () => ({ ask: async () => { asked += 1; return { answers: [] } } }) })
+  const result = { isError: false, value: { structuredContent: { ok: true, data: { draft_id: 'd3', user_requirement: 'x',
+    review: { summary: 's', approaches: [{ name: 'a', approach_id: 'a1' }],
+      parameters: [{ id: 'p', name: 'q', required: true, value: '', options: [] }] },
+    issues: { errors: [{ code: 'invalid_io_address', path: '$.io_table[0].address', message: 'bad' }] } } } } }
+  const decision = await hooks['tools/post-execute']({ name: 'mcp__gxworks__propose_design_plan',
+    agent: { session: {} } }, result, async () => ({ kind: 'accept' }))
+  assert.equal(asked, 0)
+  assert.equal(decision.kind, 'accept')
+  assert.equal(decision.value, undefined)
+})
+
+test('an unanswered required parameter keeps the same draft for the next window', async () => {
+  const hooks = {}
+  apply({ on: (name, callback) => { hooks[name] = callback },
+    get: () => ({ ask: async ({ questions: [choice] }) => ({ answers: [{ id: choice.id, selected: [choice.options[0].label] }] }) }) })
+  const result = { isError: false, value: { structuredContent: { ok: true, data: { draft_id: 'd4', user_requirement: 'x',
+    review: { summary: 's', approaches: [{ name: 'a', approach_id: 'a1' }],
+      parameters: [{ id: 'mode', name: '停机后怎样', required: true, value: '' }] },
+    issues: { errors: [{ code: 'required_parameter_missing', path: '$.parameters[0].value', message: 'missing' }] } } } } }
+  const decision = (await hooks['tools/post-execute']({ name: 'mcp__gxworks__propose_design_plan',
+    agent: { session: {} } }, result, async () => ({ kind: 'accept' }))).value.structuredContent.data
+  assert.equal(decision.approved, false)
+  assert.match(decision.feedback, /停机后怎样/u)
+  assert.deepEqual(decision.next_actions[0].arguments, {})
+})
+
+test('a stray quote inside prose does not discard the submitted draft', () => {
+  const broken = '{"summary":"用 D0 计数","approaches":[{"name":"整字移位循环","description":"按 D0 回 0 后 "重置" 历史","approach_id":"word"}]}'
+  const parsed = parseJsonText(broken)
+  assert.equal(parsed.value.approaches[0].description, '按 D0 回 0 后 "重置" 历史')
+  assert.equal(parseJsonText('{"a":1,}').value.a, 1)
+  assert.equal(parseJsonText('not json at all').error !== undefined, true)
+})
+
+test('only the named submission counts; provider noise is ignored', () => {
+  const calls = [{ name: 'read_file', arguments: '{}' }, { name: 'submit_design_plan', arguments: '{"a":1}' }]
+  assert.equal(pickSubmission(calls, 'submit_design_plan').call.arguments, '{"a":1}')
+  assert.match(pickSubmission(calls, 'submit_ladder').error, /submit_ladder/u)
+  assert.match(pickSubmission([{ name: 'submit_ladder', arguments: '{}' }, { name: 'submit_ladder', arguments: '{}' }],
+    'submit_ladder').error, /2/u)
+})
+
+test('the whole Design → answers → confirmation → generation loop runs without the outer model', async () => {
+  const hooks = {}, asked = [], calls = []
+  const review = { selected: 'BMOV 整组搬运', alternatives: [],
+    compared_families: { copy: 'BMOV' }, reviewed_instructions: [] }
+  const draft = { draft_id: 'd5', user_requirement: 'D0 计数，件间回 0，停机后保留在途物料。',
+    review: { summary: '整字移位历史', approaches: [{ name: '整字移位循环', approach_id: 'word', description: '整字移位' }],
+      parameters: [{ id: 'stop_wip', name: '停机后在途物料怎样处理', required: true, value: '', options: ['保留在途物料', '清除'] }] },
+    issues: { errors: [{ code: 'required_parameter_missing', path: '$.parameters[0].value', message: '必填参数尚未填写' }] } }
+  const doc = { project_id: 'p', plc_model: 'FX3U', workflow_mode: 'detailed', generation_context_id: 'receipt',
+    generation_instructions: 'Web 协议', output_contract: { protocol: 'compact_ladder/1.3', tool: 'create_program_candidate' },
+    generation_input: { request: draft.user_requirement, output_schema: { type: 'object', required: ['r'],
+      properties: { r: { type: 'array', items: { type: 'object' } } } } },
+    instruction_research: { families: { copy: ['BMOV'] }, manual: { coverage: { status: 'complete' }, knowledge: [] } } }
+  const props = { implementation_review: { properties: { selected: {}, alternatives: {}, limitations: {},
+    reviewed_instructions: {}, assumptions: { type: 'array' } } }, io_example: {} }
+  const tools = {
+    register(definition) { this.generator = definition },
+    get() { return { parameters: { properties: props } } },
+    async execute({ name, arguments: args }) {
+      calls.push(name.slice('mcp__gxworks__'.length))
+      let data
+      if (name.endsWith('get_current_project')) data = { project_id: 'p', target_mode: 'ladder', version_count: 0 }
+      else if (name.endsWith('get_design_context')) data = { analysis_id: 'a1', analysis_instructions: '设计协议',
+        analysis_schema: { type: 'object', required: ['summary', 'approaches'],
+          properties: { summary: { type: 'string' }, approaches: { type: 'array', items: { type: 'object' } } } },
+        knowledge: {}, instruction_research: null,
+        delivery: { page: 0, document_id: 'design-doc', complete: true },
+        document: { analysis_id: 'a1', knowledge: {}, instruction_research: null,
+          analysis_schema: { type: 'object', required: ['summary', 'approaches'],
+            properties: { summary: { type: 'string' }, approaches: { type: 'array', items: { type: 'object' } } } } } }
+      else if (name.endsWith('propose_design_plan')) {
+        assert.equal(args.analysis.approaches[0].name, '整字移位循环')
+        assert.equal(hooks['tools/post-execute'] !== undefined, true, 'the hook stays registered for top-level calls')
+        data = structuredClone(draft)
+      } else if (name.endsWith('confirm_design_plan')) {
+        assert.deepEqual(args.parameter_answers, { stop_wip: '保留在途物料' })
+        data = { confirmed: true, project_id: 'p', target_mode: 'ladder', approach_id: 'word' }
+      } else if (name.endsWith('get_generation_context')) {
+        data = { delivery: { page: 0, document_id: 'gen-doc', complete: true }, document: doc }
+      } else {
+        assert(name.endsWith('create_program_candidate'))
+        data = { candidate_id: 'c1', version_id: 'v0001',
+          delivery: { preferred_format: 'gxw', actual_format: 'gxw', degraded: false } }
+      }
+      return { isError: false, value: { structuredContent: { ok: true, data } } }
+    },
+  }
+  const llm = { async *stream(options) {
+    const tool = options.tools[0]
+    let text
+    if (tool.name === 'submit_design_plan') {
+      // A real model once emitted a bare quote inside prose here.
+      text = '{"summary":"用 D0 计数","approaches":[{"approach_id":"word","name":"整字移位循环",'
+        + '"description":"按 D0 回 0 后 "重置" 历史","implementation_semantics":[]}],'
+        + '"missing_info":[{"id":"stop_wip","question":"停机后在途物料怎样处理","required":true,"options":["保留在途物料","清除"]}]}'
+    } else {
+      text = JSON.stringify({ implementation_review: { ...review, compared_families: { copy: 'BMOV' } },
+        ladder: { networks: [{ shared_contacts: [], output_branches: [{ series_contacts: [], outputs: ['BMOV D0 D10 K4'] }] }] } })
+    }
+    yield { type: 'block-end', index: 0, block: { type: 'tool-call', name: tool.name, arguments: text } }
+    yield { type: 'finish', reason: { kind: 'tool-calls' } }
+  } }
+  const file = new URL('./requirements.test.mjs', import.meta.url)
+  const answers = { ask: async ({ questions }) => {
+    asked.push(questions.map(question => question.id))
+    const [choice, parameter] = questions
+    return { answers: [{ id: choice.id, selected: [choice.options[0].label] },
+      { id: parameter.id, selected: ['保留在途物料'] }] }
+  } }
+  apply({ on: (name, callback) => { hooks[name] = callback },
+    get: name => ({ tools, llm, userQuestions: answers })[name] })
+  const session = { snapshotEvents: () => [message(draft.user_requirement)],
+    requestHeader: () => ({ config: { model: 'test', provider: 'test' } }) }
+  const result = await tools.generator.execute({ project_id: 'p', stage: 'design' },
+    { agent: { session }, signal: new AbortController().signal, callId: 'outer' })
+  assert.deepEqual(asked, [['gxworks-design', 'gxworks-parameter-stop_wip']])
+  assert.deepEqual(calls, ['get_current_project', 'get_design_context', 'propose_design_plan',
+    'confirm_design_plan', 'get_generation_context', 'create_program_candidate'])
+  assert.equal(result.candidate.version_id, 'v0001')
+  assert.equal(result.model_calls, 2)
+  void file
+})
+
+test('the confirmation window shows the instructions the draft would use', async () => {
+  const { reviewDesign } = await import('../launch/generate-ladder.mjs')
+  let detail
+  const ctx = { get: name => name === 'userQuestions' ? { ask: async ({ questions }) => {
+    detail = questions[0].detail
+    return { answers: [{ id: questions[0].id, selected: [questions[0].options[0].label] }] }
+  } } : undefined }
+  const body = { ok: true, data: { draft_id: 'd6', user_requirement: '用位移位历史记录来料。',
+    review: { summary: '整字移位', approaches: [{ name: '整字移位循环', approach_id: 'word', description: '整字移位',
+      generation_contract: { required_opcodes: ['WSFL', 'WSFR'], instruction_instances: [{ opcode: 'SFTL' }] } }] },
+    issues: { errors: [] },
+    dropped_claims: [{ field: 'explicit_constraint_claims', claim: { operation: 'forbid', summary: '同色连续时不复位' } }] } }
+  const reviewed = await reviewDesign(ctx, { callId: 'c1', agent: { session: {} }, signal: undefined }, body)
+  assert.equal(reviewed.data.approved, true)
+  assert.match(detail, /指令：WSFL、WSFR、SFTL/u)
+  assert.match(detail, /同色连续时不复位/u)
+})
+
+test('a direct-mode choice made in a question window counts as human intent', () => {
+  const asked = { type: 'tool/call', data: { name: 'ask_user_question', callId: 'c1' } }
+  const reply = { type: 'tool/result', data: { message: { toolCallId: 'c1', isError: false,
+    content: [{ type: 'text', text: JSON.stringify({ answers: [{ id: 'approach',
+      selected: ['方案A：移位寄存器追踪（推荐，直接生成）'] }] }) }] } } }
+  const direct = { generation_mode: 'direct' }
+  assert.equal(evaluate('create_project', direct, [message('按下面的 IO 表写程序。'), asked, reply]), 'allowed')
+  const other = { type: 'tool/call', data: { name: 'ask_user_question', callId: 'c2' } }
+  const compare = { type: 'tool/result', data: { message: { toolCallId: 'c2', isError: false,
+    content: [{ type: 'text', text: JSON.stringify({ answers: [{ id: 'mode', selected: ['先比较 2~3 个设计方案再生成'] }] }) }] } } }
+  assert.equal(evaluate('create_project', direct, [message('按下面的 IO 表写程序。'), other, compare]).kind, 'deny')
+})
+
+test('a rewritten requirement is denied with the verbatim text to copy', () => {
+  const original = 'FX3U。D0 分类，1~3 蓝，4~6 绿，7~9 灰。相邻两件之间 D0 回零一次。'
+  const decision = evaluate('get_design_context', { user_requirement: 'FX3U，D0 做颜色分类，蓝绿灰三路分拣。' },
+    [message(original)])
+  assert.equal(decision.kind, 'deny')
+  assert.match(decision.reason, /逐字原文/u)
+  assert(decision.reason.includes(original))
+})
+
+test('a generator failure reaches the model with its real message', async () => {
+  const tools = { register(definition) { this.generator = definition },
+    get() { return { parameters: { properties: { implementation_review: { properties: {
+      selected: {}, alternatives: {}, limitations: {}, reviewed_instructions: {} } } } } } },
+    async execute() { throw Error('请用相关的完整用户消息传入 user_requirement。') } }
+  apply({ on() {}, get: name => ({ tools, llm: { stream() {} } })[name] })
+  const result = await tools.generator.execute({ project_id: 'p' },
+    { agent: { session: { snapshotEvents: () => [message('原始需求')] } }, signal: new AbortController().signal })
+  assert.equal(result.status, 'error')
+  assert.match(result.error, /完整用户消息/u)
+  assert.doesNotMatch(result.error, /Tool batch execution failed/u)
+})
+
+test('a batch-capable host receives nested calls through its batch executor', async () => {
+  const batches = []
+  const tools = {
+    register(definition) { this.generator = definition },
+    get() { return { parameters: { properties: { implementation_review: { properties: {
+      selected: {}, alternatives: {}, limitations: {}, reviewed_instructions: {} } } } } } },
+    selectExecutor() { return undefined },
+    async execute(request) {
+      assert(Array.isArray(request.calls), 'batch hosts must receive calls[]')
+      batches.push(request.calls[0].name)
+      const data = request.calls[0].name.endsWith('get_current_project')
+        ? { project_id: 'p', target_mode: 'st', version_count: 1 } : {}
+      return { results: [{ id: request.calls[0].id, result: { isError: false, value: { structuredContent: { ok: true, data } } } }] }
+    },
+  }
+  apply({ on() {}, get: name => ({ tools, llm: { stream() {} } })[name] })
+  const result = await tools.generator.execute({ project_id: 'p' },
+    { agent: { session: { snapshotEvents: () => [message('x')] } }, signal: new AbortController().signal })
+  assert.deepEqual(batches, ['mcp__gxworks__get_current_project'])
+  assert.match(result.error, /Ladder 工程|版本/u)
+})
+
+test('the confirmation window stays short and speaks the user language', async () => {
+  const details = []
+  const ctx = { get: name => name === 'userQuestions' ? { ask: async ({ questions }) => {
+    details.push(questions[0].detail)
+    return { answers: questions.map((question, index) => index === 0
+      ? { id: question.id, selected: [question.options[0].label] }
+      : { id: question.id, custom: '保留在途物料' }) }
+  } } : undefined }
+  const approach = { approach_id: 'q', name: '整字移位追踪', description: '用整字移位链跟踪在途物料',
+    generation_guide: '先建自锁，再按颜色生成占用与动作梯级，最后统一输出',
+    implementation_semantics: [{ kind: 'structure', status: 'required', value: 'self_hold' },
+      { kind: 'structure', status: 'required', value: 'edge_trigger' }],
+    generation_contract: { required_opcodes: ['WSFL'], forbidden_opcodes: ['OUT'], instruction_instances: [] },
+    pros: '状态清晰', cons: '需按节拍重算' }
+  const draft = { draft_id: 'd7', user_requirement: '三色物料分拣，D0 分类，连续多件需要分别追踪到站并动作。',
+    review: { summary: '整字移位追踪', approaches: [approach],
+      io_table: [{ address: 'X1', label: '启动' }],
+      io_bindings: [{ address: 'X1', label: '启动' }, { address: 'X3', label: '停止', active_level: 0 }],
+      parameters: [{ id: 'stop_wip', name: '停机后在途物料怎样处理', required: true, value: '' }],
+      behavior_constraints: [{ id: 'b1' }], user_notes: '' },
+    issues: { errors: [] } }
+  const reviewed = await reviewDesignShared(ctx, { callId: 'c1', agent: { session: {} } }, { ok: true, data: draft })
+  assert.equal(reviewed.data.approved, true)
+  const detail = details[0]
+  assert.doesNotMatch(detail, /\{"|"[a-z_]+":/u, 'no wire JSON in the window')
+  assert.match(detail, /指令：WSFL/u)
+  assert.match(detail, /关键实现：✓自锁保持 ✓边沿触发/u)
+  assert.match(detail, /待确认参数：停机后在途物料怎样处理/u)
+  assert.match(detail, /I\/O X1 启动、X3 停止\(NC\)/u)
+  assert(detail.length < 1200, 'window stays short: ' + detail.length)
+
+  const english = structuredClone(draft)
+  english.user_requirement = 'Sort three colours; D0 carries the colour code; several parts travel at once.'
+  await reviewDesignShared(ctx, { callId: 'c2', agent: { session: {} } }, { ok: true, data: english })
+  assert.match(details[1], /Planned instructions：WSFL/u)
+  assert.match(details[1], /How to build it/u)
+  assert.doesNotMatch(details[1], /\{"|"[a-z_]+":/u)
+  // The draft's own choices are never attributed to the user.
+  assert.doesNotMatch(details[0], /用户指定|原文要求/u)
+  assert.doesNotMatch(details[1], /User requirement|you asked/u)
+})
+
+test('a language without a label table gets a neutral symbol layout', async () => {
+  const seen = []
+  const ctx = { get: name => name === 'userQuestions' ? { ask: async ({ questions }) => {
+    seen.push(questions[0])
+    return { answers: questions.map((question, index) => index === 0
+      ? { id: question.id, selected: [question.options[0].label] }
+      : { id: question.id, custom: '保留' }) }
+  } } : undefined }
+  const approach = { approach_id: 'q', name: 'シフト追跡', description: '色ビットを左シフトして位置を追う',
+    generation_guide: '自己保持を作ってから色ごとに梯級を生成する', pros: '状態が明確', cons: '周期の再計算が必要',
+    generation_contract: { required_opcodes: ['WSFL'], forbidden_opcodes: ['M8011'] } }
+  const draft = { draft_id: 'd8', user_requirement: '三色物料の自動分別。D0 の色コードで判定し、複数個を追跡して仕分ける。',
+    review: { summary: '色コードで追跡して仕分ける', approaches: [approach],
+      io_bindings: [{ address: 'X1', label: '起動' }],
+      parameters: [{ id: 'stop', name: '停止後の扱い', required: true, value: '' }],
+      behavior_constraints: [{ id: 'b1' }] },
+    issues: { errors: [] } }
+  await reviewDesignShared(ctx, { callId: 'c3', agent: { session: {} } }, { ok: true, data: draft })
+  const question = seen[0]
+  assert.equal(question.header, undefined, 'no localized header either')
+  assert.match(question.detail, /⚙ WSFL/u)
+  assert.match(question.detail, /⛔ M8011/u)
+  assert.match(question.detail, /\? 停止後の扱い/u)
+  assert.match(question.detail, /» 三色物料の自動分別/u)
+  assert.doesNotMatch(question.detail, /拟定指令|Planned instructions|优势|Pros：|关键实现/u)
+  assert.doesNotMatch(question.detail, /\{"|"[a-z_]+":/u)
+  assert.equal(question.options[question.options.length - 1].label, '✎')
+})
+
+test('batch-host hooks do not re-intercept nested Design calls, and repairDesign handles typed values without instruction_details', async () => {
+  const hooks = {}, asked = [], seenDesignArgs = [], seenProposeArgs = []
+  const draftNeedsRepair = {
+    status: 'repair_required', analysis_id: 'a1', repair_id: 'rep-1',
+    draft_id: 'd-rep', user_requirement: 'FX3U: X0->Y0, T0 K50 延时',
+    review: { summary: '延时控制', approaches: [{ name: '定时器保持', approach_id: 'timer', description: 'T0 延时' }], parameters: [] },
+    issues: { errors: [{ code: 'ungrounded_claim', path: '$.explicit_constraint_claims[0]', message: 'bad claim' }] },
+    repair_targets: [{
+      path: '$.explicit_constraint_claims[0]', mode: 'claim', reason: 'inferred_claim_not_grounded',
+      current_value: { summary: '延时启动', evidence: ['fake'] },
+      value_schema: { type: 'object', properties: { summary: { type: 'string' }, inferred: { type: 'boolean' } } },
+    }],
+  }
+  const draftClean = {
+    draft_id: 'd-rep', user_requirement: draftNeedsRepair.user_requirement,
+    review: draftNeedsRepair.review, issues: { errors: [] }, repair_targets: [],
+  }
+  const genDoc = {
+    project_id: 'p', plc_model: 'FX3U', workflow_mode: 'detailed', generation_context_id: 'rcpt',
+    generation_instructions: 'Web', output_contract: { protocol: 'compact_ladder/1.3', tool: 'create_program_candidate' },
+    generation_input: { request: draftNeedsRepair.user_requirement, output_schema: { type: 'object', required: ['r'], properties: { r: { type: 'array', items: { type: 'object' } } } } },
+    instruction_research: { families: {}, manual: { coverage: { status: 'complete' }, knowledge: [] } },
+  }
+  const props = { implementation_review: { properties: { selected: {}, alternatives: {}, limitations: {}, reviewed_instructions: {} } } }
+  const tools = {
+    register(definition) { this.generator = definition },
+    get() { return { parameters: { properties: props } } },
+    selectExecutor() { return undefined },
+    async execute(request) {
+      const results = []
+      for (const call of request.calls) {
+        const parsedArgs = typeof call.arguments === 'string' ? JSON.parse(call.arguments) : call.arguments
+        const exec = { callId: call.id, name: call.name, arguments: parsedArgs, agent: { session } }
+        const pre = hooks['tools/pre-execute'](exec, () => 'allowed')
+        assert.equal(pre, 'allowed', `nested call ${call.name} should not be blocked by pre-execute`)
+        let data
+        if (call.name.endsWith('get_current_project')) data = { project_id: 'p', target_mode: 'ladder', version_count: 0 }
+        else if (call.name.endsWith('get_design_context')) {
+          seenDesignArgs.push(structuredClone(parsedArgs))
+          data = { delivery: { page: 0, document_id: 'dd', complete: true }, document: {
+            analysis_id: 'a1', analysis_instructions: '设计', knowledge: {},
+            analysis_schema: { type: 'object', required: ['summary', 'approaches'], properties: { summary: { type: 'string' }, approaches: { type: 'array', items: { type: 'object' } } } },
+          } }
+        } else if (call.name.endsWith('propose_design_plan')) {
+          seenProposeArgs.push(structuredClone(parsedArgs))
+          data = parsedArgs.repairs ? structuredClone(draftClean) : structuredClone(draftNeedsRepair)
+        } else if (call.name.endsWith('confirm_design_plan')) {
+          data = { confirmed: true, project_id: 'p', target_mode: 'ladder', approach_id: 'timer' }
+        } else if (call.name.endsWith('get_generation_context')) {
+          data = { delivery: { page: 0, document_id: 'gd', complete: true }, document: genDoc }
+        } else if (call.name.endsWith('create_program_candidate')) {
+          data = { candidate_id: 'c1', version_id: 'v0001', delivery: { preferred_format: 'gxw', actual_format: 'gxw', degraded: false } }
+        }
+        let rawResult = { isError: false, value: { structuredContent: { ok: true, data } } }
+        const post = await hooks['tools/post-execute'](exec, rawResult, async () => ({ kind: 'accept' }))
+        if (post?.value) rawResult = post.value
+        results.push({ id: call.id, result: rawResult })
+      }
+      return { results }
+    },
+  }
+  const llm = { async *stream(options) {
+    const tool = options.tools[0]
+    let payload
+    if (tool.name === 'submit_design_plan') {
+      payload = { summary: '延时控制', approaches: [{ approach_id: 'timer', name: '定时器保持', description: 'T0 延时' }] }
+    } else if (tool.name === 'submit_design_repairs') {
+      payload = { repairs: [{ path: '$.explicit_constraint_claims[0]', value: { summary: '延时启动', inferred: true } }] }
+    } else {
+      payload = { implementation_review: { selected: 'OUT T0' }, ladder: { networks: [{ shared_contacts: ['NO X0'], output_branches: [{ series_contacts: [], outputs: ['TIMER T0 K50'] }] }] } }
+    }
+    yield { type: 'block-end', index: 0, block: { type: 'tool-call', name: tool.name, arguments: JSON.stringify(payload) } }
+    yield { type: 'finish', reason: { kind: 'tool-calls' } }
+  } }
+  const userQuestions = { ask: async ({ questions }) => {
+    asked.push(questions)
+    return { answers: [{ id: questions[0].id, selected: [questions[0].options[0].label] }] }
+  } }
+  const session = { snapshotEvents: () => [message(draftNeedsRepair.user_requirement)],
+    requestHeader: () => ({ config: { model: 'test', provider: 'test' } }) }
+  apply({ on: (name, cb) => { hooks[name] = cb }, get: name => ({ tools, llm, userQuestions })[name] })
+  const out = await tools.generator.execute({ project_id: 'p', stage: 'design' },
+    { agent: { session }, signal: new AbortController().signal, callId: 'outer-batch' })
+  assert.equal(out.candidate.version_id, 'v0001')
+  assert.equal(asked.length, 1, 'reviewDesign runs once inside generate-ladder without post-execute double popup')
+  assert.equal(asked[0][0].header, '工程设计', 'device-heavy Chinese requirement still resolves to zh locale')
+  assert.deepEqual(seenDesignArgs, [{ user_requirement: draftNeedsRepair.user_requirement }])
+  assert.equal(seenProposeArgs.length, 2)
+  assert.deepEqual(seenProposeArgs[1], {
+    analysis_id: 'a1', repair_id: 'rep-1',
+    repairs: [{ path: '$.explicit_constraint_claims[0]', value: { summary: '延时启动', inferred: true } }],
+  })
+})
+
+test('question window answers count in quotesUserMessages, and revisedRequirements work in generate-ladder', async () => {
+  const askCall = { type: 'tool/call', data: { name: 'ask_user_question', callId: 'q1',
+    arguments: JSON.stringify({ questions: [{ id: 'stop_mode', question: '停机处理' }] }) } }
+  const askReply = { type: 'tool/result', data: { message: { toolCallId: 'q1', isError: false,
+    content: [{ type: 'text', text: JSON.stringify({ answers: [{ id: 'stop_mode', selected: ['清零复位'], custom: '同时关闭Y0' }] }) }] } } }
+  const events = [message('X0 启动电机。'), askCall, askReply]
+  assert.equal(evaluate('get_design_context',
+    { user_requirement: 'X0 启动电机。\n清零复位\n同时关闭Y0' }, events), 'allowed')
+  assert.equal(evaluate('get_design_context',
+    { user_requirement: 'X0 启动电机。\n停机处理: 清零复位' }, events), 'allowed')
+  assert.equal(evaluate('get_design_context',
+    { user_requirement: 'X0 启动电机。\n未出现过的附加要求' }, events).kind, 'deny')
+
+  // Revised requirement from reviewDesign ("✎ 修改或补充需求") is accepted by gxworks_generate_ladder.
+  const hooks = {}
+  let seenReq
+  const tools = {
+    register(d) { this.generator = d },
+    get() { return { parameters: { properties: { implementation_review: { properties: { selected: {}, alternatives: {}, limitations: {}, reviewed_instructions: {} } } } } } },
+    async execute({ name, arguments: args }) {
+      let data = {}
+      if (name.endsWith('get_current_project')) data = { project_id: 'p', target_mode: 'ladder', version_count: 0 }
+      else if (name.endsWith('get_generation_context')) {
+        seenReq = args.user_requirement
+        data = { delivery: { page: 0, document_id: 'gd', complete: true }, document: {
+          project_id: 'p', plc_model: 'FX3U', workflow_mode: 'direct_generation', generation_context_id: 'r1',
+          generation_instructions: 'Web', output_contract: { protocol: 'compact_ladder/1.3', tool: 'create_program_candidate' },
+          generation_input: { request: args.user_requirement, output_schema: { type: 'object', properties: { r: { type: 'array' } } } },
+          instruction_research: { families: {}, manual: { coverage: { status: 'complete' }, knowledge: [] } },
+        } }
+      } else if (name.endsWith('create_program_candidate')) {
+        data = { candidate_id: 'c1', version_id: 'v0001', delivery: { preferred_format: 'gxw', actual_format: 'gxw', degraded: false } }
+      }
+      return { isError: false, value: { structuredContent: { ok: true, data } } }
+    },
+  }
+  const llm = { async *stream(options) {
+    yield { type: 'block-end', index: 0, block: { type: 'tool-call', name: options.tools[0].name,
+      arguments: JSON.stringify({ implementation_review: { selected: 'COIL' }, ladder: { networks: [{ shared_contacts: ['NO X0'], output_branches: [{ series_contacts: [], outputs: ['COIL Y0'] }] }] } }) } }
+    yield { type: 'finish', reason: { kind: 'tool-calls' } }
+  } }
+  const userQuestions = { ask: async ({ questions: [q] }) => ({
+    answers: [{ id: q.id, selected: [q.options[q.options.length - 1].label], custom: '补充急停 X1 常闭切断' }],
+  }) }
+  apply({ on: (name, cb) => { hooks[name] = cb }, get: name => ({ tools, llm, userQuestions })[name] })
+  const session = { snapshotEvents: () => [message('X0 启动 Y0')], requestHeader: () => ({ config: { model: 'm', provider: 'p' } }) }
+  await hooks['tools/post-execute']({ name: 'mcp__gxworks__propose_design_plan', agent: { session } }, {
+    isError: false, value: { structuredContent: { ok: true, data: {
+      draft_id: 'd-rev', user_requirement: 'X0 启动 Y0',
+      review: { summary: '启停', approaches: [{ name: '自锁', approach_id: 'a1' }] }, issues: { errors: [] },
+    } } },
+  }, async () => ({ kind: 'accept' }))
+  const revised = 'X0 启动 Y0\n\n补充急停 X1 常闭切断'
+  const gen = await tools.generator.execute({ project_id: 'p', user_requirement: revised },
+    { agent: { session }, signal: new AbortController().signal, callId: 'rev-gen' })
+  assert.equal(gen.candidate.version_id, 'v0001')
+  assert.equal(seenReq, revised)
+})
+
+test('partial parameter answers re-prompt only remaining questions, and diacritic Latin uses neutral layout', async () => {
+  const rounds = []
+  const ctx = { get: name => name === 'userQuestions' ? { ask: async ({ questions }) => {
+    rounds.push(questions.map(q => q.id))
+    if (rounds.length === 1) {
+      return { answers: [
+        { id: questions[0].id, selected: [questions[0].options[0].label] },
+        { id: 'gxworks-parameter-p1', custom: '5秒' },
+      ] }
+    }
+    return { answers: [{ id: 'gxworks-parameter-p2', custom: '保持输出' }] }
+  } } : undefined }
+  const draft = {
+    draft_id: 'd-part', user_requirement: "Contrôle d'arrêt d'urgence avec temporisation.",
+    review: {
+      summary: 'Temporisation',
+      approaches: [{ approach_id: 'a1', name: 'Temporisateur', description: 'Marche/arrêt' }],
+      parameters: [
+        { id: 'p1', name: 'Durée', required: true, value: '' },
+        { id: 'p2', name: 'Comportement arrêt', required: true, value: '' },
+      ],
+    },
+    issues: { errors: [
+      { code: 'required_parameter_missing', path: '$.parameters[0].value', message: 'missing p1' },
+      { code: 'required_parameter_missing', path: '$.parameters[1].value', message: 'missing p2' },
+    ] },
+  }
+  let firstHeader
+  const origAsk = ctx.get('userQuestions').ask
+  const wrappedCtx = { get: name => name === 'userQuestions' ? { ask: async req => {
+    if (rounds.length === 0) firstHeader = req.questions[0].header
+    return origAsk(req)
+  } } : undefined }
+  const reviewed = await reviewDesignShared(wrappedCtx, { callId: 'c-part', agent: { session: {} } }, { ok: true, data: draft })
+  assert.equal(firstHeader, undefined, 'French with diacritics uses neutral layout instead of English')
+  assert.deepEqual(rounds, [
+    ['gxworks-design', 'gxworks-parameter-p1', 'gxworks-parameter-p2'],
+    ['gxworks-parameter-p2'],
+  ])
+  assert.equal(reviewed.data.approved, true)
+  assert.deepEqual(reviewed.data.next_actions[0].arguments, {
+    draft_id: 'd-part', approach_id: 'a1', parameter_answers: { p1: '5秒', p2: '保持输出' },
+  })
+})
+
+test('saveWithBehaviorCheck does not mutate original program if patched save fails compilation', async () => {
+  const raw = 'Light Y0 on X0.'
+  const goodNet = { c: ['NO X0'], b: [{ i: [], o: ['COIL Y0'] }] }
+  const badPatchNet = { c: ['NO X999'], b: [{ i: [], o: ['COIL Y0'] }] }
+  const submissions = []
+  let callIndex = 0
+  const props = { implementation_review: { properties: { selected: {}, alternatives: {}, limitations: {}, reviewed_instructions: {} } } }
+  const tools = {
+    register(d) { this.generator = d },
+    get() { return { parameters: { properties: props } } },
+    async execute({ name, arguments: args }) {
+      if (name.endsWith('get_current_project')) return { value: { structuredContent: { ok: true, data: { project_id: 'p', target_mode: 'ladder', version_count: 0 } } } }
+      if (name.endsWith('get_generation_context')) return { value: { structuredContent: { ok: true, data: {
+        delivery: { document_id: 'doc', page: 0, complete: true },
+        document: {
+          project_id: 'p', plc_model: 'FX3U', generation_context_id: 'ctx1',
+          generation_input: { request: raw, output_schema: { properties: { r: { items: { type: 'object' } } } } },
+          output_contract: { protocol: 'compact_ladder/1.3', tool: 'create_program_candidate' },
+          instruction_research: { families: {}, manual: { coverage: { status: 'complete' }, knowledge: [] } },
+        },
+      } } } }
+      submissions.push(structuredClone(args.ladder))
+      callIndex++
+      if (callIndex === 1) {
+        return { value: { structuredContent: { ok: false, error: {
+          code: 'CANDIDATE_BEHAVIOR_MISMATCH',
+          behavior_result: { status: 'mismatch', case_id: 'c1', address: 'Y0', at_ms: 5, scan_ms: 5, expected: 1, actual: 0, input_sequence: [], network_indexes: [0] },
+        } } } }
+      }
+      if (callIndex === 2) {
+        return { isError: true, error: { message: 'Invalid operand X999 at $.r[0]' } }
+      }
+      return { value: { structuredContent: { ok: true, data: { candidate_id: 'c-ok', version_id: 'v0001' } } } }
+    },
+  }
+  const seenPrompts = []
+  const llm = { async *stream(options) {
+    const tool = options.tools[0]
+    seenPrompts.push({ name: tool.name, text: options.messages[0].content[0].text })
+    let val
+    if (tool.name === 'submit_ladder') {
+      val = { implementation_review: { selected: 'COIL' }, ladder: { r: [goodNet] } }
+    } else {
+      val = { edits: [{ index: 0, networks: [badPatchNet] }] }
+    }
+    yield { type: 'block-end', index: 0, block: { type: 'tool-call', name: tool.name, arguments: JSON.stringify(val) } }
+    yield { type: 'finish', reason: { kind: 'tool-calls' } }
+  } }
+  apply({ on() {}, get: name => ({ tools, llm })[name] })
+  const session = { snapshotEvents: () => [message(raw)], requestHeader: () => ({ config: { model: 'm', provider: 'p' } }) }
+  const out = await tools.generator.execute({ project_id: 'p' }, { agent: { session }, signal: new AbortController().signal })
+  assert.equal(out.status, 'repair_required')
+  assert.equal(submissions.length, 2)
+  assert.deepEqual(submissions[0].r, [goodNet])
+  assert.deepEqual(submissions[1].r, [badPatchNet])
+  // recover() returns the compilable initial program rather than the broken patched network.
+  assert.deepEqual(out.draft.ladder.r, [goodNet])
 })

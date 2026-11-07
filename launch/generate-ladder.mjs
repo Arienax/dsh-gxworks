@@ -1,5 +1,12 @@
 // The local MCP owns engineering facts and validation. Desktop owns its model.
 export const generatorName = 'gxworks_generate_ladder'
+export const nestedCallIds = new Set()
+
+export function isNestedGeneratorCall(exec) {
+  return exec?.parent !== undefined ||
+    (typeof exec?.callId === 'string' && nestedCallIds.has(exec.callId)) ||
+    (typeof exec?.id === 'string' && nestedCallIds.has(exec.id))
+}
 
 export function humanTexts(session) {
   return session.snapshotEvents().filter(e => e.type === 'user/message' && e.data.source?.kind === 'user')
@@ -8,6 +15,363 @@ export function humanTexts(session) {
 
 export function explicitDirect(text = '') {
   return /(?:^|[\n。！？；，,.!;]\s*)(?:请|请你|这次|本次)?\s*(?:直接(?:帮我)?生成|跳过(?:方案|设计)确认|使用\s*direct\s*模式|(?:use\s+)?direct\s+(?:mode|generation)|\/gxworks-direct)(?:[\s，。,.!！]|程序|梯形图|$)/iu.test(text)
+}
+
+// Models stream tool arguments as raw text. One bare quote or newline inside an
+// explanation must not cost the whole stage: repair the text, then parse.
+export function repairJsonText(text) {
+  const source = String(text ?? '')
+  let out = ''
+  let inString = false
+  let escaped = false
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index]
+    if (inString) {
+      if (escaped) { out += character; escaped = false; continue }
+      if (character === '\\') { out += character; escaped = true; continue }
+      if (character === '\n') { out += '\\n'; continue }
+      if (character === '\r') { out += '\\r'; continue }
+      if (character === '\t') { out += '\\t'; continue }
+      if (character === '"') {
+        let next = index + 1
+        while (next < source.length && /\s/u.test(source[next])) next += 1
+        const follower = source[next]
+        // A quote only closes a string when the structure continues after it.
+        if (follower === undefined || ',:}]'.includes(follower)) { out += '"'; inString = false }
+        else out += '\\"'
+        continue
+      }
+      out += character
+      continue
+    }
+    if (character === '"') inString = true
+    out += character
+  }
+  return out.replace(/,(\s*[}\]])/gu, '$1')
+}
+
+/** Parse one model submission, tolerating a fence and recoverable syntax slips. */
+export function parseJsonText(text) {
+  const trimmed = String(text ?? '').trim()
+  const fenced = trimmed.match(/^`{3}(?:json)?[ \t]*\n([\s\S]*?)\n?`{3}$/iu)
+  for (const candidate of fenced ? [fenced[1], trimmed] : [trimmed]) {
+    if (!candidate) continue
+    try { return { value: JSON.parse(candidate) } } catch { /* try the repaired text */ }
+    const repaired = repairJsonText(candidate)
+    if (repaired !== candidate) {
+      try { return { value: JSON.parse(repaired) } } catch { /* report the failure below */ }
+    }
+  }
+  return { error: '模型提交的内容不是有效 JSON。' }
+}
+
+/** Use the submission call itself; unrelated extra calls are the provider's noise. */
+export function pickSubmission(calls, name) {
+  const list = [...calls]
+  const matched = list.filter(call => call?.name === name)
+  if (matched.length === 1) return { call: matched[0] }
+  return { error: matched.length
+    ? `模型给出了 ${matched.length} 个 ${name} 提交。`
+    : `模型未返回 ${name} 提交${list.length ? '（实际返回：' + list.map(call => call?.name).join('、') + '）' : ''}。` }
+}
+
+// A draft can be complete except for facts only the human can supply. Those
+// answers are the missing input, so the window must still open instead of
+// bouncing the draft back to the model for another full analysis.
+const answerableErrors = new Set(['required_parameter_missing', 'parameter_details_missing'])
+
+/** The approach the user approved for this session, consumed by confirm_design_plan. */
+export const designApprovals = new WeakMap()
+/** A requirement the user changed through the window: the only allowed rewrite. */
+export const revisedRequirements = new WeakMap()
+
+export function normalizeRequirement(text) {
+  return String(text ?? '').trim().replace(/\s+/gu, ' ')
+}
+
+function pendingParameters(review) {
+  const rows = Array.isArray(review?.parameters) ? review.parameters : []
+  return rows.filter(row => row && row.id && row.required !== false && !String(row.value ?? '').trim())
+}
+
+function parameterQuestionId(row) {
+  return 'gxworks-parameter-' + row.id
+}
+
+function answerValue(answer, id) {
+  const item = answer?.answers?.find(entry => entry?.id === id)
+  const custom = typeof item?.custom === 'string' ? item.custom.trim() : ''
+  if (custom) return custom
+  const selected = Array.isArray(item?.selected) ? item.selected : []
+  return selected.length === 1 && typeof selected[0] === 'string' ? selected[0].trim() : ''
+}
+
+// The window is read by a human, so it speaks the user's language and never
+// dumps the wire JSON: those fields are long, token-shaped, and unreadable.
+const structureWords = {
+  zh: {
+    self_hold: '自锁保持', set_reset_latch: '置位复位锁存', edge_trigger: '边沿触发',
+    state_initialization: '状态初始化', state_transition: '状态转移', state_comparison: '状态比较',
+    bit_state_machine: '位状态机', register_state_machine: '寄存器状态机',
+    data_register_counter: '数据寄存器计数', hardware_counter: '高速计数器', direct_logic: '直接逻辑',
+    analog_control: '模拟量控制', pulse_positioning: '脉冲定位', pid_control: 'PID 控制',
+    serial_communication: '串口通信', vfd_multi_speed: '变频器多段速',
+  },
+  en: {
+    self_hold: 'self-hold', set_reset_latch: 'set/reset latch', edge_trigger: 'edge trigger',
+    state_initialization: 'state initialization', state_transition: 'state transition',
+    state_comparison: 'state comparison', bit_state_machine: 'bit state machine',
+    register_state_machine: 'register state machine', data_register_counter: 'register counter',
+    hardware_counter: 'high-speed counter', direct_logic: 'direct logic', analog_control: 'analog control',
+    pulse_positioning: 'pulse positioning', pid_control: 'PID control',
+    serial_communication: 'serial communication', vfd_multi_speed: 'VFD multi-speed',
+  },
+}
+
+const windowWords = {
+  zh: {
+    advantages: '优势', limits: '限制', instructions: '拟定指令', forbidden: '排除',
+    keys: '关键实现', must: '必须', no: '禁用', anyOf: '任一',
+    bindings: 'I/O', pending: '待确认参数', ignored: '原文未支持的标注（已忽略）', behaviors: '行为约束', operations: '操作意图', semantics: '执行语义',
+    other: '其他', request: '原始需求（节选）', drop: '舍弃', guide: '实施要点',
+    header: '工程设计', ask: '选择要按其生成程序的方案，或提出修改。', change: '修改方案',
+    changeHint: '返回设计阶段，补充要求或调整方案。', params: '设计参数',
+  },
+  en: {
+    advantages: 'Pros', limits: 'Cons', instructions: 'Planned instructions', forbidden: 'Avoiding',
+    keys: 'Key choices', must: 'must', no: 'forbid', anyOf: 'any of',
+    bindings: 'I/O', pending: 'Open questions', ignored: 'Claims the request did not support (dropped)', behaviors: 'behavior constraints', operations: 'operation intents', semantics: 'execution semantics',
+    other: 'Other', request: 'Request (excerpt)', drop: 'drop', guide: 'How to build it',
+    header: 'Design review', ask: 'Pick the approach to implement, or ask for changes.', change: 'Change the approach',
+    changeHint: 'Go back to design and add or adjust requirements.', params: 'Design parameters',
+  },
+}
+
+// Chinese and English have label tables; every other language gets a neutral
+// symbol layout, because only the model's own sentences are in that language.
+function localeOf(text) {
+  const source = String(text ?? '')
+  const cjk = (source.match(/[\u3400-\u9fff]/gu) || []).length
+  const kana = (source.match(/[\u3040-\u30ff]/gu) || []).length
+  const hangul = (source.match(/[\uac00-\ud7af]/gu) || []).length
+  if (kana > 0 || hangul > 0) return 'neutral'
+  if (/[\u0400-\u04ff\u0600-\u06ff\u0e00-\u0e7f]/u.test(source)) return 'neutral'
+  if (cjk > 0) return 'zh'
+  if (/[\u00c0-\u024f\u1e00-\u1eff]/u.test(source)) return 'neutral'
+  return 'en'
+}
+
+function wordsOf(locale) {
+  return windowWords[locale] || {}
+}
+
+function shortText(text, limit) {
+  const value = String(text ?? '').trim()
+  return value.length > limit ? value.slice(0, limit - 1) + '…' : value
+}
+
+function instructionNames(contract, key, property) {
+  const list = contract?.[key]
+  if (!Array.isArray(list)) return []
+  return [...new Set(list.map(item => typeof item === 'string' ? item : item?.[property || 'opcode'])
+    .filter(Boolean))].map(String)
+}
+
+/** "✓自锁保持 ✓边沿触发 ✗定时" — readable, and no field names leak. */
+function semanticsText(rows, locale) {
+  const table = structureWords[locale] || structureWords.en
+  const parts = []
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const values = [row?.value, ...(Array.isArray(row?.values) ? row.values : [])].filter(Boolean)
+    const names = values.map(value => table[value] || String(value).replace(/_/gu, ' '))
+    if (!names.length) continue
+    const mark = row.status === 'forbidden' ? '✗' : row.status === 'any_of' ? '±' : '✓'
+    parts.push(mark + names.join('/'))
+  }
+  return parts.join(' ')
+}
+
+/** One labelled line, or a symbol-marked one when this language has no table. */
+function labelled(locale, key, mark, value, limit) {
+  const words = wordsOf(locale)
+  const text = limit ? shortText(value, limit) : String(value ?? '').trim()
+  if (!text) return ''
+  if (!key) return text
+  const label = words[key]
+  return label ? `${label}：${text}` : `${mark} ${text}`
+}
+
+/** Which instructions this approach claims, so the human sees them before approving. */
+function approachDetail(approach, label, locale) {
+  const contract = approach?.generation_contract && typeof approach.generation_contract === 'object'
+    ? approach.generation_contract : {}
+  const opcodes = [...new Set([...instructionNames(contract, 'required_opcodes'),
+    ...instructionNames(contract, 'instruction_instances')])]
+  const forbidden = instructionNames(contract, 'forbidden_opcodes')
+  const keys = locale === 'neutral' ? '' : semanticsText(approach?.implementation_semantics, locale)
+  // No "you asked for this" wording: every opcode here is the draft's own choice,
+  // whether it came from a claim about the request or from the model's planning.
+  return [`### ${label}`, labelled(locale, '', '', approach.description, 200),
+    labelled(locale, 'advantages', '+', approach.pros, 140),
+    labelled(locale, 'limits', '−', approach.cons, 140),
+    opcodes.length > 0 && labelled(locale, 'instructions', '⚙', opcodes.join('、')),
+    forbidden.length > 0 && labelled(locale, 'forbidden', '⛔', forbidden.join('、')),
+    keys && labelled(locale, 'keys', '◆', keys),
+    labelled(locale, 'guide', '→', approach.generation_guide, 120)]
+    .filter(Boolean).join('\n')
+}
+
+/** One line for everything else the draft carries, instead of a JSON blob. */
+function otherSummary(review, locale) {
+  const words = wordsOf(locale)
+  const parts = []
+  const bindings = Array.isArray(review?.io_bindings) ? review.io_bindings : []
+  if (bindings.length) {
+    parts.push((words.bindings || 'I/O') + ' ' + bindings.slice(0, 6).map(row =>
+      `${row.address} ${shortText(row.label, 16)}${row.active_level === 0 ? '(NC)' : ''}`.trim()).join('、'))
+  }
+  for (const [key, label] of [['behavior_constraints', words.behaviors], ['operation_intents', words.operations],
+    ['execution_semantics', words.semantics]]) {
+    const rows = review?.[key]
+    if (Array.isArray(rows) && rows.length) parts.push(label ? `${label} ${rows.length}` : `×${rows.length}`)
+  }
+  if (review?.user_notes) parts.push(shortText(review.user_notes, 120))
+  return parts.join('；')
+}
+
+function droppedClaimLine(row, locale) {
+  const words = wordsOf(locale)
+  const claim = row?.claim && typeof row.claim === 'object' ? row.claim : {}
+  const text = [claim.summary, claim.claim, claim.text, claim.description]
+    .map(value => typeof value === 'string' ? value.trim() : '').find(Boolean)
+  const kind = [claim.operation, claim.target?.kind]
+    .map(value => typeof value === 'string' ? value.trim() : '').find(Boolean)
+  const label = [kind, text].filter(Boolean).join(' · ')
+  return '- ' + (label || String(row?.field || words.drop || '?'))
+}
+
+/**
+ * Show the draft and the facts it still needs in one window, then answer for it.
+ * @returns undefined when the draft is not for the human yet, `{block}` when the
+ * host cannot ask, otherwise `{data}` — the response the generator continues from.
+ */
+export async function reviewDesign(ctx, exec, body) {
+  const draft = body?.data
+  const choices = draft?.review?.approaches
+  if (!body?.ok || !choices?.length) return
+  const errors = Array.isArray(draft.issues?.errors) ? draft.issues.errors : []
+  const requiredParameters = pendingParameters(draft.review)
+  // Only a draft whose remaining errors are answers the human owes may still be
+  // confirmed here; anything else is a model error for the model to fix.
+  if (errors.length &&
+      !(requiredParameters.length > 0 && errors.every(issue => answerableErrors.has(issue?.code)))) return
+  const askUser = ctx.get?.('userQuestions')
+  if (!askUser) return { block: '当前宿主没有用户确认入口。可在 Desktop 打开此草稿继续确认。' }
+  const session = exec.agent?.session
+  designApprovals.delete(session)
+  const locale = localeOf(draft.user_requirement)
+  const words = wordsOf(locale)
+  const numbered = choice => `${choice.name}`
+  const labels = choices.map((choice, i) => locale === 'neutral' ? `${i + 1} · ${numbered(choice)}`
+    : `${locale === 'zh' ? '方案' : 'Option'} ${i + 1} · ${choice.name}`)
+  const { summary, approaches = [], parameters, ...rest } = draft.review
+  const other = otherSummary(rest, locale)
+  const open = (Array.isArray(parameters) ? parameters : []).filter(row => !String(row.value ?? '').trim())
+  const ignored = (draft.dropped_claims || []).map(row => droppedClaimLine(row, locale))
+  const detail = [shortText(summary, 200),
+    ...approaches.map((approach, i) => approachDetail(approach, labels[i], locale)),
+    open.length > 0 && labelled(locale, 'pending', '?', open.map(row => shortText(row.name || row.id, 60)).join('；')),
+    ignored.length > 0 && labelled(locale, 'ignored', '!', '\n' + ignored.join('\n')),
+    other && labelled(locale, 'other', '·', other),
+    labelled(locale, 'request', '»', draft.user_requirement, 180)].filter(Boolean).join('\n\n')
+  const question = { id: 'gxworks-design', header: words.header, detail,
+    question: words.ask || shortText(summary, 80) || labels.join(' / '),
+    options: [...choices.map((a, i) => ({ label: labels[i],
+      description: shortText(a.description || a.generation_guide || '', 90) })),
+      { label: words.change || '✎', description: shortText(words.changeHint || '', 90) }] }
+  if (locale === 'neutral') delete question.header
+  if (choices.length === 1) question.intent = { kind: 'plan-review', approve: labels[0], callId: exec.callId }
+  // Ask the facts the draft still needs in the same window, so the answers
+  // travel with the draft instead of arriving as an edited requirement.
+  const parameterQuestions = requiredParameters.map(row => ({ id: parameterQuestionId(row),
+    ...(words.params ? { header: words.params } : {}),
+    question: String(row.name || row.id).trim() || String(row.id),
+    ...(row.note ? { detail: String(row.note) } : {}),
+    ...(Array.isArray(row.options) && row.options.length
+      ? { options: row.options.map(option => ({ label: String(option) })) } : {}) }))
+  let answer, cancelled = false
+  try {
+    answer = await askUser.ask({ questions: [question, ...parameterQuestions], agent: exec.agent, signal: exec.signal })
+  } catch (error) {
+    if (error.code !== 'ASK_CANCELLED') throw error
+    // Closing the panel is not a request to redesign; say exactly that.
+    answer = { answers: [] }
+    cancelled = true
+  }
+  const item = answer.answers.find(entry => entry.id === question.id)
+  const index = item?.custom === undefined && item?.selected?.length === 1 ? labels.indexOf(item.selected[0]) : -1
+  const parameterAnswers = {}
+  let newlyAnswered = 0
+  for (const row of requiredParameters) {
+    const value = answerValue(answer, parameterQuestionId(row))
+    if (value) {
+      parameterAnswers[row.id] = value
+      newlyAnswered += 1
+    }
+  }
+  // If the user selected an approach and answered part of the required parameters,
+  // ask only the remaining questions without discarding the answers already given.
+  while (index >= 0 && !cancelled && newlyAnswered > 0) {
+    const remainingQuestions = parameterQuestions.filter((_, i) => !parameterAnswers[requiredParameters[i].id])
+    if (!remainingQuestions.length) break
+    newlyAnswered = 0
+    try {
+      const followUp = await askUser.ask({ questions: remainingQuestions, agent: exec.agent, signal: exec.signal })
+      for (const row of requiredParameters) {
+        if (parameterAnswers[row.id]) continue
+        const value = answerValue(followUp, parameterQuestionId(row))
+        if (value) {
+          parameterAnswers[row.id] = value
+          newlyAnswered += 1
+        }
+      }
+    } catch (error) {
+      if (error.code !== 'ASK_CANCELLED') throw error
+      cancelled = true
+    }
+  }
+  const unanswered = requiredParameters.filter(row => !parameterAnswers[row.id]).map(row => String(row.name || row.id))
+  const answered = Object.keys(parameterAnswers).length > 0
+  if (cancelled && index < 0) {
+    return { data: { approved: false,
+      feedback: '用户关闭了确认窗口，没有选择方案。不要重新设计，也不要继续生成；请用户在对话里给出决定后再展示同一份草稿。' } }
+  }
+  if (index >= 0 && !unanswered.length) {
+    const selection = { draft_id: draft.draft_id, approach_id: choices[index].approach_id,
+      ...(answered ? { parameter_answers: parameterAnswers } : {}) }
+    designApprovals.set(session, selection)
+    return { data: { approved: true, next_actions: [{ tool: 'confirm_design_plan', arguments: selection }] } }
+  }
+  if (index >= 0) {
+    // Keep the same draft; only the answers are missing.
+    designApprovals.delete(session)
+    return { data: { approved: false,
+      feedback: `用户选择了${labels[index]}，但必填参数尚未回答：${unanswered.join('、')}。`
+        + '请用 propose_design_plan({}) 重新展示这份草稿并再次向用户提问；答案只随参数提交，不要并入 user_requirement，也不要重新设计。',
+      next_actions: [{ tool: 'propose_design_plan', arguments: {},
+        instruction: '用空参数重新展示当前草稿，确认窗口会再次收集这些答案。' }] } }
+  }
+  const custom = typeof item?.custom === 'string' ? item.custom.trim() : ''
+  const notes = [...(custom ? [custom] : []),
+    ...requiredParameters.map(row => parameterAnswers[row.id] && `${String(row.name || row.id).trim()}：${parameterAnswers[row.id]}`)]
+    .filter(Boolean)
+  const response = { approved: false, feedback: custom || '用户要求修改方案。请先听取修改意见。' }
+  if (notes.length) {
+    const requirement = [draft.user_requirement, ...notes].join('\n')
+    revisedRequirements.set(session, normalizeRequirement(requirement))
+    response.next_actions = [{ tool: 'get_design_context', arguments: { user_requirement: requirement } }]
+  }
+  return { data: response }
 }
 
 function resolvePage(value, units, schema = false) {
@@ -95,7 +459,7 @@ function contextText(packet) {
 
 const manualFormat = '手册 rows 按 columns 取值并继承 common、同序号 extra_fields_by_row；by_result 中所列 aspects 共享该项的结论和缺项。'
 const directSelection = '优先用本 CPU 能直接表达工艺的成组操作。准备逐项复制逻辑时，先换一种状态表示和推进事件：可以由公共时基推进整组状态，也可按事件更新单项记录。两种用法在同一输入下比较，只写一两句决定性差异。只排除实际比较过的用法。不得靠自行限定容量或输入节拍使实现成立。只生成所选的一份程序。'
-const selection = '按同一组工艺条件比较至少两种整体实现。区分题目要求与实现假设，估算各自的步数增长、状态和资源。未规定的容量、精度、互斥或排队条件不能作为排除另一种算法的理由。当同一段逻辑随元素或通道重复时，比较逐项展开和利用本 CPU 成组操作的整体方案，说明数据怎样表示、怎样更新、并发与复位怎样保持。优先采用能直接表达工艺、减少重复且满足原始行为的型号指令。资料缺项说明对选择的影响。'
+const designSelection = '按同一组工艺条件比较至少两种整体实现。区分题目要求与实现假设，估算各自的步数增长、状态和资源。未规定的容量、精度、互斥或排队条件不能作为排除另一种算法的理由。当同一段逻辑随元素或通道重复时，比较逐项展开和利用本 CPU 成组操作的整体方案，说明数据怎样表示、怎样更新、并发与复位怎样保持。草稿只写工艺事实、状态表示和推进方式：具体指令与操作数按协议不入草稿，在生成阶段由实现审查选择，除非用户原文明确指定。用户未说明而影响实现的事实写进 missing_info 的问题与选项，不要用假设顶替。资料缺项说明对选择的影响。'
 
 // The Web wire uses short keys. Spell out the same fields in the provider's tool schema.
 const ladderFields = { r: 'networks', c: 'shared_contacts', b: 'output_branches', i: 'series_contacts', o: 'outputs' }
@@ -190,16 +554,18 @@ function wireReview(value, compact) {
     ...(compact ? { reviewed_instructions: [...new Set(names)] } : {}), ...(typeof limitations === 'string' && limitations.trim() ? { limitations } : {}) }
 }
 
-async function modelResponse(llm, exec, system, input, metrics, stage, submission) {
+async function modelResponse(llm, exec, system, input, metrics, stage, submission, options = {}) {
   const config = exec.agent.session.requestHeader()?.config
   if (!config?.model || !config?.provider) throw Error('当前会话没有已选模型。')
   const started = Date.now(), blocks = new Map()
   let finish, usage
   const calls = new Map()
-  const task = stage === 'design'
-    ? '当前只做规格设计。原始需求是下面资料中的 request 字段。根据型号和工艺比较有实质差异的方案；调用 submit_design_plan 提交草稿供用户选择。'
-    : stage === 'repair' ? '按给出的反例和原始要求，只提交相关梯级的改动。'
-    : '现在按 request 生成一份程序。按 submit_ladder 的字段提交简短取舍和程序。'
+  const task = options.syntax ? '把给出的内容重写为一个合法 JSON 对象，字段名和文字不变。'
+    : stage === 'design'
+      ? '当前只做规格设计。原始需求是下面资料中的 request 字段。根据型号和工艺比较有实质差异的方案；调用 submit_design_plan 提交草稿供用户选择。'
+      : stage === 'design:repair' ? '只按 targets 提交字段修正，不要重写整份分析。'
+        : stage === 'repair' ? '按给出的反例和原始要求，只提交相关梯级的改动。'
+          : '现在按 request 生成一份程序。按 submit_ladder 的字段提交简短取舍和程序。'
   const messages = [{ role: 'user', content: [{ type: 'text', text: input }, { type: 'text', text: task }] }]
   for await (const chunk of llm.stream({ ...config, system, messages, ...(submission ? { tools: [submission] } : {}), sessionId: exec.agent.session.id, signal: exec.signal })) {
     if (chunk.type === 'text-delta') blocks.set(chunk.index, (blocks.get(chunk.index) || '') + chunk.text)
@@ -216,15 +582,25 @@ async function modelResponse(llm, exec, system, input, metrics, stage, submissio
   }
   if (finish?.kind !== 'stop' && !(submission && finish?.kind === 'tool-calls')) throw Error('Ladder 模型调用未正常结束：' + (finish?.failure?.message || finish?.kind || '连接中断'))
   metrics.push({ stage, model: config.model, elapsed_ms: Date.now() - started, ...(usage ? { usage } : {}) })
-  const draft = calls.size ? [...calls.values()].map(call => call.arguments).join('\n') : [...blocks.values()].join('').trim()
-  if (calls.size && (calls.size !== 1 || [...calls.values()][0].name !== submission?.name)) {
-    return { error: '模型未返回唯一的 ' + submission?.name + ' 提交。', draft }
+  let draft
+  if (calls.size) {
+    const picked = pickSubmission(calls.values(), submission?.name)
+    if (picked.error) return { error: picked.error, draft: [...calls.values()].map(call => call.arguments).join('\n') }
+    draft = picked.call.arguments
+  } else {
+    draft = [...blocks.values()].join('').trim()
   }
-  try {
-    return { value: JSON.parse(draft.replace(/^\x60{3}(?:json)?\s*\n([\s\S]*)\n\x60{3}$/i, '$1')) }
-  } catch {
-    return { error: '模型提交的内容不是有效 JSON。', draft }
+  const parsed = parseJsonText(draft)
+  if (parsed.value !== undefined) return { value: parsed.value }
+  // One bounded syntax-only retry keeps the analysed content; a second full call
+  // with the original task is what makes these failures cost minutes.
+  if (!options.repair) {
+    const fixed = await modelResponse(llm, exec,
+      '只修复 JSON 语法：把下面这段模型输出重写为一个合法 JSON 对象，字段名、字段值和文字都不改，不要新增或省略内容。',
+      draft.length > 60000 ? draft.slice(0, 60000) : draft, metrics, stage + ':syntax', submission, { syntax: true, repair: true })
+    if (fixed.value !== undefined) return { ...fixed, repaired: true }
   }
+  return { error: parsed.error, draft }
 }
 
 export function registerLadderGenerator(ctx, quotes) {
@@ -238,20 +614,40 @@ export function registerLadderGenerator(ctx, quotes) {
       user_requirement: { type: 'string', description: '单条新需求或已确认 Design 省略；多轮合并只用相关的完整用户消息。' },
     } },
     output: { schema: { type: 'object' }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
+    // A thrown error reaches the model as "Tool batch execution failed", which
+    // says nothing about what went wrong. Report the real reason instead.
     async execute(args, exec) {
+      try {
+        return await this.run(args, exec)
+      } catch (error) {
+        if (exec.signal?.aborted) throw error
+        return { status: 'error', project_id: args.project_id, error: String(error?.message || error) }
+      }
+    },
+    async run(args, exec) {
       if (!exec.agent) throw Error('需要当前 Desktop 会话。')
       let calls = 0
       async function invoke(tool, input) {
         const name = 'mcp__gxworks__' + tool
-        const callId = exec.callId + '-gx-' + (++calls)
+        const callId = (exec.callId || 'gx') + '-gx-' + (++calls)
+        nestedCallIds.add(callId)
         let result
-        if (typeof tools.selectExecutor === 'function') {
-          const batch = await tools.execute({ calls: [{ id: callId, name, arguments: JSON.stringify(input) }],
-            agent: exec.agent, signal: exec.signal, toolSet: exec.toolSet })
-          result = batch.results[0].result
-        } else {
-          result = await tools.execute({ name, arguments: input, callId, rootCallId: exec.rootCallId || exec.callId,
-            parent: exec.token, signal: exec.signal, agent: exec.agent })
+        // The installed host dispatches nested tool calls through its batch
+        // executor; calling the single-call signature there fails with
+        // "Tool batch execution failed". Use whichever the host exposes.
+        try {
+          if (typeof tools.selectExecutor === 'function') {
+            const batch = await tools.execute({ calls: [{ id: callId, name, arguments: JSON.stringify(input) }],
+              parent: exec.token, agent: exec.agent, signal: exec.signal, toolSet: exec.toolSet })
+            const entry = batch?.results?.[0]
+            if (!entry?.result) throw Error('宿主批量执行没有返回 ' + tool + ' 的结果。')
+            result = entry.result
+          } else {
+            result = await tools.execute({ name, arguments: input, callId, rootCallId: exec.rootCallId || exec.callId,
+              parent: exec.token, signal: exec.signal, agent: exec.agent })
+          }
+        } finally {
+          nestedCallIds.delete(callId)
         }
         for (const extra of result.additionalContexts || []) exec.deferContext(extra)
         if (result.isError) {
@@ -273,25 +669,89 @@ export function registerLadderGenerator(ctx, quotes) {
       if (!project.has_confirmed_spec) {
         const texts = humanTexts(exec.agent.session)
         raw = args.user_requirement || (texts.length === 1 ? texts[0] : undefined)
-        if (!raw || !quotes(raw, exec.agent.session.snapshotEvents())) throw Error('请用相关的完整用户消息传入 user_requirement。')
+        if (!raw || (revisedRequirements.get(exec.agent.session) !== normalizeRequirement(raw) &&
+            !quotes(raw, exec.agent.session.snapshotEvents()))) {
+          throw Error('请用相关的完整用户消息传入 user_requirement。')
+        }
+      }
+      // A repair request otherwise costs a full round trip through the outer
+      // model, which then rewrites the draft by hand and loses the analysis.
+      // Resolve only the listed fields here, once.
+      async function repairDesign(state) {
+        const targets = Array.isArray(state.repair_targets) ? state.repair_targets : []
+        if (!targets.length || !state.repair_id || !state.analysis_id) return
+        const targetByPath = new Map(targets.map(target => [target.path, target]))
+        const submission = { name: 'submit_design_repairs',
+          description: '只提交 repair_targets 列出的字段修正，其余草稿保持不变。',
+          parameters: { type: 'object', required: ['repairs'], additionalProperties: false, properties: {
+            repairs: { type: 'array', minItems: targets.length, maxItems: targets.length, items: { type: 'object',
+              required: ['path', 'value'], additionalProperties: false, properties: {
+                path: { type: 'string', enum: targets.map(target => target.path) },
+                value: {
+                  anyOf: [{ type: 'array' }, { type: 'object' }, { type: 'string' }, { type: 'number' }, { type: 'boolean' }, { type: 'null' }],
+                  description: '修正后的 JSON 值；删除 claim 条目时填 []，移除禁止字段时填 null。',
+                } } } } } } }
+        const fixed = await modelResponse(llm, exec,
+          '只调用 submit_design_repairs。按 targets 的错误逐一修正全部所列字段；能引用的证据必须逐字来自 request。'
+          + '原文没有的地址、指令或事实不要写成证据，可设 inferred: true 或删掉未锚定条目。不要重写整份分析。',
+          JSON.stringify({ request: raw, targets }), metrics, 'design:repair', submission)
+        const rows = fixed.value?.repairs
+        if (!Array.isArray(rows) || !rows.length) return
+        const byPath = new Map()
+        for (const row of rows) {
+          if (!row || !targetByPath.has(row.path) || byPath.has(row.path)) continue
+          const target = targetByPath.get(row.path)
+          let value = Object.hasOwn(row, 'value') ? row.value : undefined
+          if (value === undefined && Object.hasOwn(row, 'value_json')) {
+            try { value = JSON.parse(String(row.value_json ?? '')) } catch { continue }
+          } else if (typeof value === 'string' && (target.mode === 'claim' || target.mode === 'remove')) {
+            try { value = JSON.parse(value) } catch { continue }
+          }
+          byPath.set(row.path, { path: row.path, value })
+        }
+        if (byPath.size !== targets.length) return
+        return invoke('propose_design_plan', { analysis_id: state.analysis_id, repair_id: state.repair_id, repairs: [...byPath.values()] })
       }
       if (args.stage === 'design' && !project.has_confirmed_spec) {
         const { content: design } = await readDocument(invoke, 'get_design_context', {
-          user_requirement: raw, instruction_details: true })
-        const input = contextText({ request: raw, knowledge: design.knowledge, instruction_research: design.instruction_research })
+          user_requirement: raw })
+        const input = contextText({ request: raw, knowledge: design.knowledge })
         if (!design.analysis_schema?.properties?.approaches) throw Error('后端未交付 Web Design 草稿结构。')
         const submission = { name: 'submit_design_plan', parameters: design.analysis_schema,
           description: '按 Web Design 结构提交规格草稿。把工艺事实与备选实现分开，证据须逐字来自用户。' }
-        const analysis = await modelResponse(llm, exec, [design.analysis_instructions, manualFormat, selection].join('\n'), input, metrics, 'design', submission)
+        const analysis = await modelResponse(llm, exec, [design.analysis_instructions, designSelection].join('\n'), input, metrics, 'design', submission)
         if (analysis.error) return { status: 'repair_required', error: analysis.error, draft: analysis.draft,
           project_id: project.project_id, analysis_id: design.analysis_id, model_calls: metrics.length, metrics,
           next_actions: [{ tool: 'propose_design_plan', instruction: '整理返回的草稿，沿用 analysis_id 提交。' }] }
-        const proposal = await invoke('propose_design_plan', { analysis_id: design.analysis_id, analysis: analysis.value })
-        if (!proposal.approved) return { project_id: project.project_id, model_calls: metrics.length, metrics, proposal,
+        let proposal = await invoke('propose_design_plan', { analysis_id: design.analysis_id, analysis: analysis.value })
+        if (proposal.status === 'repair_required') {
+          try {
+            const repaired = await repairDesign(proposal)
+            if (repaired && !repaired.status) proposal = repaired
+          } catch { /* retain the unrepaired proposal and its repair_targets */ }
+        }
+        // The post-execute hook ignores nested calls, so the window belongs here:
+        // waiting on the human must not hold up the rest of the model's batch.
+        const reviewed = await reviewDesign(ctx, exec, { ok: true, data: proposal })
+        if (!reviewed) return { project_id: project.project_id, model_calls: metrics.length, metrics, proposal,
           ...(proposal.status ? { status: proposal.status, next_actions: proposal.next_actions } : {}) }
-        const confirm = proposal.next_actions?.find(action => action.tool === 'confirm_design_plan')
+        if (reviewed.block) return { status: 'confirmation_unavailable', project_id: project.project_id,
+          model_calls: metrics.length, metrics, error: reviewed.block }
+        const settled = reviewed.data
+        if (!settled.approved) return { project_id: project.project_id, model_calls: metrics.length, metrics, proposal: settled,
+          ...(settled.status ? { status: settled.status, next_actions: settled.next_actions } : {}) }
+        const confirm = settled.next_actions?.find(action => action.tool === 'confirm_design_plan')
         if (!confirm) throw Error('缺少当前用户已选择的设计方案。')
-        const saved = await invoke('confirm_design_plan', confirm.arguments)
+        let saved
+        try {
+          saved = await invoke('confirm_design_plan', confirm.arguments)
+        } catch (error) {
+          // Bundled backends before this change reject the answer field outright.
+          if (!confirm.arguments?.parameter_answers || !/unknown field|parameter_answers/iu.test(String(error.message))) throw error
+          return { status: 'design_answers_unsupported', project_id: project.project_id, model_calls: metrics.length, metrics,
+            error: '内置后端还不接受参数答案，请更新后端包后重试。',
+            proposal: settled }
+        }
         if (!saved.confirmed) return { project_id: project.project_id, model_calls: metrics.length, metrics, proposal: saved }
       }
       const contextArgs = project.has_confirmed_spec || metrics.length ? { workflow: 'detailed' }
@@ -337,7 +797,7 @@ export function registerLadderGenerator(ctx, quotes) {
       try { program = wireLadder(reply.ladder) }
       catch (error) { return recover(String(error.message), reply) }
       const example = reply.io_example || reply.implementation_review?.io_example
-      const save = () => invoke('create_program_candidate', { ladder: program,
+      const save = (candidateLadder = program) => invoke('create_program_candidate', { ladder: candidateLadder,
         generation_context_id: doc.generation_context_id, implementation_review: review, ...(example ? { io_example: example } : {}) })
       async function saveWithBehaviorCheck() {
         try { return await save() } catch (error) {
@@ -374,11 +834,22 @@ export function registerLadderGenerator(ctx, quotes) {
           if (!Array.isArray(edits) || !edits.length || !edits.every(e => e && indexes.includes(e.index) && Array.isArray(e.networks)) ||
               new Set(edits.map(e => e.index)).size !== edits.length) throw error
           const byIndex = new Map(edits.map(e => [e.index, e.networks]))
-          body.r = body.r.flatMap((row, i) => byIndex.get(i) || [row])
-          return save()
+          const patched = structuredClone(program)
+          const patchedBody = patched.result?.program || patched
+          patchedBody.r = patchedBody.r.flatMap((row, i) => byIndex.get(i) || [row])
+          try {
+            const savedPatched = await save(patched)
+            program = patched
+            return savedPatched
+          } catch (patchError) {
+            if (patchError.detail?.code === 'CANDIDATE_BEHAVIOR_MISMATCH') program = patched
+            throw patchError
+          }
         }
       }
-      exec.agent.session.append('dsh-gxworks/verification-started', {}, { ignorable: true })
+      // No chat notice here: the host persists unknown event types without the
+      // ignorable flag this plugin cannot set, and one such event makes the whole
+      // session log unreadable on the next load.
       try {
         candidate = await saveWithBehaviorCheck()
       } catch (error) {
