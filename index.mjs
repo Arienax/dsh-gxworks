@@ -147,10 +147,17 @@ export function apply(ctx) {
       }
     }
     if (!exec.agent || isNestedGeneratorCall(exec)) return next()
-    if (tool === 'create_project' && args.generation_mode === 'direct' &&
-        !explicitDirect(humanTexts(exec.agent.session).at(-1)) &&
-        !questionChoices(exec.agent.session).some(choice => chosenDirect(choice))) {
-      return { kind: 'deny', reason: '本次用户消息未选择 Direct。省略 generation_mode 继续默认 Design。用户可用“直接生成”、/gxworks-direct，或在确认窗口里选择直接生成。' }
+    // The backend owns the semantic gate: its schema tells the model to choose
+    // direct by specification completeness (porting, complete sequences, FB
+    // authoring, explicit requests). Only enforce the hard floor here — the
+    // literal wording of a direct request — and let the MCP server judge the rest.
+    if (tool === 'create_project' && args.generation_mode === 'direct') {
+      const requested = explicitDirect(humanTexts(exec.agent.session).at(-1)) ||
+        questionChoices(exec.agent.session).some(choice => chosenDirect(choice))
+      if (!requested && !args.implementation_specified) {
+        return { kind: 'deny', reason: '直接模式仅用于：跨品牌移植/转写、已给出完整时序/公式/步骤的规格、确定性 FB 编写，或用户明确要求直接生成。'
+          + '开放式工艺需求请省略 generation_mode 走默认 Design；用户原话说“直接生成”时无需本参数之外的确认。' }
+      }
     }
     if (['get_design_context', 'get_generation_context'].includes(tool) && args.user_requirement &&
         revisedRequirements.get(exec.agent.session) !== normalize(args.user_requirement) &&
