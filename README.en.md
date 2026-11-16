@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+
 # dsh-gxworks
 
 This plugin brings [GXWorks Agent](https://github.com/Arienax/gxworks-agent) into DeepSeek Harness for Ladder, ST, FBD and SFC tasks. Use chat to read GXW projects, generate program candidates and edit supported program objects offline.
