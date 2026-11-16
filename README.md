@@ -26,4 +26,8 @@ dsh plugin --profile web add dsh-gxworks
 
 更新用 `dsh plugin --profile web update dsh-gxworks`，卸载用 `dsh plugin --profile web remove dsh-gxworks`。
 
+## 许可证
+
+`dsh-gxworks` 自有代码和文档采用 [GNU Affero General Public License v3.0（仅第 3 版）](LICENSE)。随包分发的 [上游技能](skills/gxworks-mcp-router/COPYING.md) 和 [GXWorks Agent MCP 后端](runtime/README.md) 按各自的许可证分发。
+
 [English](README.en.md)
