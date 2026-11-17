@@ -3,9 +3,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFileSync } from 'node:fs'
-import { runInNewContext } from 'node:vm'
 import { apply as applyPlugin } from '../index.mjs'
-import { parseJsonText, pickSubmission, readDocument, reviewDesign as reviewDesignShared } from '../launch/generate-ladder.mjs'
+import { reviewDesign as reviewDesignShared } from '../launch/design-review.mjs'
 
 function apply(ctx) {
   return applyPlugin({ ...ctx, mcpManager: ctx.mcpManager || { register() {} } })
@@ -27,71 +26,13 @@ test('rc.3 owns the bundled MCP server through its manager', () => {
   assert.equal(config.command, process.execPath)
   assert.deepEqual(config.env, { DSH_HOME: 'F:\\dsh-custom-home' })
   assert.match(config.args[0], /launch[\\/]mcp-launch\.mjs$/u)
+  assert.deepEqual(config.args.slice(1), ['--read-budget-tokens', '128000'])
   assert.equal(config.startupTimeoutMs, 600000)
   assert.equal(config.toolCallTimeoutMs, 600000)
   assert.equal(config.closeTimeoutMs, 10000)
   assert.equal(config.reconnect.enabled, true)
   const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
   assert(!patch.includes("name: '@deepseek-ai/dsh-mcp-client'"), 'do not launch a duplicate static MCP server')
-})
-
-for (const code of ['APPROVAL_REJECTED', 'APPROVAL_CANCELLED', 'APPROVAL_UNAVAILABLE', 'TOOL_CONTEXT_UNAVAILABLE', 'ABORTED_BEFORE_DISPATCH']) {
-  test(`rc.3 nested tool failure preserves ${code} without generating again`, async () => {
-    let calls = 0
-    const tools = {
-      register(definition) { this.generator = definition },
-      selectExecutor() {},
-      async execute() {
-        calls++
-        return { results: [{ result: { isError: true, error: { message: 'Host refused this call',
-          info: { name: 'HostError', code, reason: 'host-only detail' } }, content: [] } }] }
-      },
-    }
-    const llm = { stream() { assert.fail('a host failure must not start model generation') } }
-    apply({ on() {}, get: name => ({ tools, llm })[name] })
-    const result = await tools.generator.execute({ project_id: 'p' }, {
-      agent: { session: {} }, signal: new AbortController().signal, callId: 'outer',
-    })
-    assert.equal(calls, 1)
-    assert.equal(result.status, 'error')
-    assert.match(result.error, /Host refused this call/u)
-    assert.deepEqual(result.error_info, { name: 'HostError', code })
-    assert(!JSON.stringify(result).includes('host-only detail'))
-  })
-}
-
-test('large interfaces raise only the read budget and preserve the whole query', async () => {
-  const calls = []
-  const args = { user_requirement: '多轴控制', instruction_details: true }
-  const result = await readDocument(async (tool, input) => {
-    calls.push({ tool, input })
-    if (!input.read_budget_tokens) throw Object.assign(Error('budget'), {
-      detail: { code: 'READ_BUDGET_TOO_SMALL', required_read_budget_tokens: 24000 } })
-    return { context_schema_version: 4, document: { interfaces: { axes: 24 } },
-      delivery: { document_id: 'large', page: 0, complete: true, next: null } }
-  }, 'get_generation_context', args)
-  assert.deepEqual(calls[1].input, { ...args, read_budget_tokens: 24000 })
-  assert.deepEqual(result.content, { interfaces: { axes: 24 } })
-})
-
-test('readable sections join without resolving schema references and restore facts in a batch', async () => {
-  const schema = { properties: { source: { $ref: '#/$defs/source' } } }
-  const calls = []
-  const result = await readDocument(async (tool, args) => {
-    calls.push({ tool, args })
-    if (tool === 'gxworks_read_context_unit') return { units: { a: { opcode: 'MOV' }, b: { opcode: 'BMOV' } } }
-    const index = args.cursor ? 1 : 0
-    return { context_schema_version: 4, document: index ? {
-      plc_model: 'FX3U', generation_input: { knowledge: [{ $conversation_ref: 'b', restore_tool: 'gxworks_read_context_unit' }] },
-    } : {
-      plc_model: 'FX3U', generation_input: { output_schema: schema,
-        knowledge: [{ $conversation_ref: 'a', restore_tool: 'gxworks_read_context_unit' }] },
-    }, delivery: { document_id: 'doc', page: index, complete: Boolean(index),
-      next: index ? null : { tool, arguments: { cursor: 'doc:1' } } } }
-  }, 'get_generation_context', {})
-  assert.equal(result.pages, 2)
-  assert.deepEqual(result.content.generation_input, { output_schema: schema, knowledge: [{ opcode: 'MOV' }, { opcode: 'BMOV' }] })
-  assert.deepEqual(calls.at(-1), { tool: 'gxworks_read_context_unit', args: { ids: ['a', 'b'] } })
 })
 
 function evaluate(tool, args, messages) {
@@ -124,13 +65,11 @@ test('the host sends original human messages in chronological order', async () =
   assert.deepEqual(await dispatch('get_design_context', { cursor: 'next' }, events), { cursor: 'next' })
 })
 
-test('new designs require a review while ordinary engineering calls pass through', () => {
-  // The backend contract (generation_tools.py) only lists implementation_review
-  // in required_fields for Ladder candidates and new-FBD generation. ST and SFC
-  // stay optional there; the MCP server's check_review rejects with diagnostics.
+test('candidate review requirements are enforced by the current backend contract', () => {
   for (const tool of ['create_program_candidate', 'create_fbd_candidate']) {
-    assert.equal(evaluate(tool, { operation: 'generate' }, []).kind, 'deny')
+    assert.equal(evaluate(tool, { operation: 'generate' }, []), 'allowed')
   }
+  assert.equal(evaluate('create_program_candidate', { generation_context_id: 'edit', ladder: { mode: 'partial', r: [] } }, []), 'allowed')
   assert.equal(evaluate('create_st_candidate', { operation: 'generate' }, []), 'allowed')
   assert.equal(evaluate('create_sfc_candidate', { operation: 'generate' }, []), 'allowed')
   assert.equal(evaluate('create_fbd_candidate', { operation: 'edit' }, []), 'allowed')
@@ -167,244 +106,6 @@ test('Desktop binds confirmation to the human choice for this draft and session'
   pick = 2
   assert.equal((await review()).value.structuredContent.data.approved, false)
   assert.equal(confirm('new', 'contact').kind, 'deny')
-})
-
-test('only a human mode request can skip the Design review', () => {
-  const direct = { generation_mode: 'direct' }
-  for (const words of ['请编写梯形图。', '不要直接生成。', '先比较 Direct 和 Design。']) {
-    assert.equal(evaluate('create_project', direct, [message(words)]).kind, 'deny')
-  }
-  for (const words of ['请直接生成。', '/gxworks-direct', 'Use direct mode.']) {
-    assert.equal(evaluate('create_project', direct, [message(words)]), 'allowed')
-  }
-})
-
-test('new Ladder routes to one Desktop generator and preserves the selected mode', async () => {
-  const hooks = {}, tools = { register(tool) { this.generator = tool } }, llm = { stream() {} }
-  apply({ on: (name, hook) => { hooks[name] = hook }, get: name => ({ tools, llm })[name], tools })
-  assert.equal(tools.generator.name, 'gxworks_generate_ladder')
-  for (const [tool, stage] of [['get_design_context', { stage: 'design' }], ['get_generation_context', {}]]) {
-    const value = { structuredContent: { ok: true, data: { selected_project_id: 'p',
-      project: { target_mode: 'ladder' }, next_actions: [{ tool }] } } }
-    const decision = await hooks['tools/post-execute']({ name: 'mcp__gxworks__create_project', agent: {} },
-      { value }, async () => ({ kind: 'accept' }))
-    assert.deepEqual(decision.value.structuredContent.data.next_actions, [
-      { tool: tools.generator.name, arguments: { project_id: 'p', ...stage } }])
-  }
-})
-
-for (const resolved of [false, true]) for (const degraded of [false, true]) for (const notes of ['complete', 'misnested', 'absent'])
-test(`Direct preserves the program; resolved=${resolved}; degraded=${degraded}; notes=${notes}`, async () => {
-  const raw = 'Copy the input buffer to the output buffer.', scope = { type: 'object', required: ['r'], properties: { r: { type: 'array' } } }
-  const ladder = { r: [{ c: [], b: [{ i: [], o: ['BMOV D0 D10 K4'] }] }], device_comments: [] }
-  const decisions = { selected: 0, rationale: 'Copies the whole block.' }
-  const wrap = program => notes !== 'complete' ? program : degraded
-    ? { decisions, program, open_items: [] }
-    : { result: { decisions, program, open_items: [] } }
-  const review = { selected: 'BMOV copies the whole block.', alternatives: [{ method: 'MOV', tradeoff: 'One per word.' }] }
-  const facts = [1, 2, 3, 4].map(value => ({ dimension: 'test.long_fact_dimension', value,
-    selection_applicability: 'applicable', ...(value === 3 ? { conditions: ['only on edge'] } : {}) }))
-  let reads = 0, generations = 0, saved
-  const fragmentReview = { status: 'not_established', blocking: false,
-    findings: [{ network_index: 2, reason: 'external_write_activation_not_established' }] }
-  const notices = []
-  const doc = { project_id: 'p', generation_context_id: 'receipt', generation_instructions: 'Web Direct',
-    workflow_mode: 'direct_generation', output_contract: { protocol: 'compact_ladder/1.3', tool: 'create_program_candidate' },
-    generation_input: { request: raw, output_schema: scope }, instruction_research: { families: { copy: ['BMOV'] }, manual: { coverage: { status: 'incomplete' }, knowledge: [{ facts }] } } }
-  const tools = {
-    register(d) { this.generator = d },
-    get() { return { parameters: { properties: { ...(resolved ? { read_format: { enum: ['resolved', 'paged'] } } : {}), implementation_review: { properties: {
-      selected: { type: 'string' }, alternatives: { type: 'array' }, limitations: { type: 'string' } } } } } } },
-    async execute({ name, arguments: args }) {
-      let data
-      if (name.endsWith('get_current_project')) data = { project_id: 'p', target_mode: 'ladder', version_count: 0 }
-      else if (name.endsWith('get_generation_context')) {
-        const page = reads++
-        if (page === 0) assert.deepEqual(args, { workflow: 'direct_generation', user_requirement: raw,
-          ...(resolved ? {} : { instruction_details: true }) })
-        else assert.deepEqual(args, { cursor: 'next' })
-        data = resolved ? { context_schema_version: 4, document: doc,
-          delivery: { page, document_id: 'manual-context', complete: true, next: null } }
-          : { document: { $ref: '#/objects/doc' }, objects: page === 1 ? { doc } : {}, delivery: {
-          page, document_id: 'manual-context', complete: page === 1, next: page === 1 ? null : {
-            tool: 'get_generation_context', arguments: { cursor: 'next' } } } }
-      } else {
-        assert(name.endsWith('create_program_candidate')); saved = args
-        assert.deepEqual(JSON.parse(JSON.stringify(args)), args, 'Desktop arguments must contain no undefined values')
-          data = { candidate_id: 'example', version_id: 'v0001', fragment_review: fragmentReview,
-          implementation_review: { assumptions: [{ condition: 'Model implementation note' }] }, delivery: { preferred_format: 'gxw',
-          actual_format: degraded ? 'csv' : 'gxw', degraded, reason: degraded ? 'project readback mismatch' : null } }
-      }
-      return { isError: false, value: { structuredContent: { ok: true, data } } }
-    },
-  }
-  const llm = { async *stream(options) {
-    generations++
-    assert.equal(reads, resolved ? 1 : 2)
-    assert.equal(options.model, 'current-model')
-    assert.equal(options.provider, 'selected-provider')
-    const parameters = options.tools[0].parameters.properties
-    assert.deepEqual(parameters.ladder.required, ['networks'])
-    if (resolved) {
-      assert.deepEqual(options.tools[0].parameters.required, ['ladder'])
-      assert.equal(parameters.implementation_review.properties.compared_families, undefined)
-    } else {
-      assert.deepEqual(parameters.implementation_review.properties.compared_families.properties.copy.properties.instruction.enum, ['BMOV'])
-      assert(parameters.implementation_review.required.includes('limitations'))
-    }
-    const packet = JSON.parse(options.messages[0].content[0].text)
-    const table = packet.instruction_research.manual.knowledge[0].facts
-    assert.deepEqual(table.rows.map((row, i) => ({ ...table.common,
-      ...Object.fromEntries(table.columns.map((key, n) => [key, row[n]])), ...table.extra_fields_by_row?.[i] })), facts)
-    assert.equal(packet.request, raw)
-    assert.equal(JSON.parse(options.messages[0].content[0].text).output_schema, undefined)
-    const value = { implementation_review: { ...review, compared_families_note: 'extra',
-        alternatives: review.alternatives.map(row => ({ ...row, note: 'Separate writes.' })), compared_families: {
-          copy: { instruction: 'BMOV', tradeoff: 'Copies a contiguous range.' }, limitations: 'Check the available range.' },
-        ladder: { networks: [{ shared_contacts: [], output_branches: [{ series_contacts: [], outputs: ['BMOV D0 D10 K4'] }] }], device_comments: [] } } }
-    value.implementation_review.ladder = wrap(value.implementation_review.ladder)
-    if (notes !== 'complete') {
-      value.ladder = value.implementation_review.ladder
-      if (notes === 'misnested') value.implementation_review = { grouped_option: {
-        instruction: 'BMOV', comparison: 'Copies a contiguous range.', selected: 'Nested model note', assumptions: [] } }
-      else delete value.implementation_review
-    }
-    yield { type: 'block-end', index: 0, block: { type: 'tool-call', name: 'submit_ladder', arguments: JSON.stringify(value) } }
-    yield { type: 'finish', reason: { kind: 'tool-calls' } }
-  } }
-  apply({ on() {}, get: name => ({ tools, llm })[name] })
-  const session = { snapshotEvents: () => [message(raw)], append: (type, data, options) => {
-    notices.push({ type, data, options })
-    assert.fail('the generator must not append session events')
-  }, requestHeader: () => ({
-    config: { provider: 'selected-provider', model: 'current-model' } }) }
-  const result = await tools.generator.execute({ project_id: 'p' }, { agent: { session }, signal: new AbortController().signal, callId: 'test' })
-  assert.equal(generations, 1)
-  assert.equal(result.model_calls, 1)
-  assert.deepEqual(result.candidate.fragment_review, fragmentReview, 'uncertain analysis stays advisory without a repair request')
-  assert.deepEqual(result.implementation_review.assumptions, [{ condition: 'Model implementation note' }], 'retain model notes without source labels')
-  assert.deepEqual(notices, [], 'generation must leave the session log untouched')
-  assert.equal(result.status, degraded ? 'delivery_degraded' : undefined)
-  if (degraded) assert.deepEqual(result.delivery, result.candidate.delivery)
-  assert.deepEqual(JSON.parse(JSON.stringify(result)), result, 'Desktop result must contain no undefined values')
-  if (notes === 'complete') assert.deepEqual(saved, { ladder: wrap(ladder), generation_context_id: 'receipt', implementation_review: {
-    selected: review.selected, alternatives: [
-      { method: 'MOV', tradeoff: 'One per word. Separate writes.' }, { method: 'BMOV', tradeoff: 'Copies a contiguous range.' }],
-    limitations: 'Check the available range.', manual_documents: [], context_document: 'manual-context' } })
-  else assert.deepEqual(saved, { ladder, generation_context_id: 'receipt', implementation_review: {
-    alternatives: notes === 'misnested' ? [{ method: 'BMOV', tradeoff: 'Copies a contiguous range.' }] : [],
-    manual_documents: [], context_document: 'manual-context' } })
-})
-
-for (const fixed of [true, false]) test('An independent counterexample gets one scoped repair; resolved=' + fixed, async () => {
-  const raw = 'A request should light only its assigned lamp.', calls = [], submissions = [], notices = []
-  const first = { c: [], b: [{ i: [], o: ['COIL Y0'] }] }
-  const next = { c: ['NO X0'], b: [{ i: [], o: ['COIL Y1'] }] }
-  const inputSequence = [{ at_ms: 0, set: { X0: 0 } }]
-  const caseInputs = [...inputSequence, { at_ms: 15, set: { X0: 1 } }]
-  const original = Array(fixed ? 18 : 2).fill(first)
-  const scope = fixed ? original.map((_, index) => index) : [1]
-  const ioResult = { status: 'mismatch', case_id: 'lamp', address: 'Y1', at_ms: 5, scan_ms: 5, expected: 0, actual: true,
-    input_sequence: inputSequence, network_indexes: scope }
-  if (fixed) Object.assign(ioResult, { case_input_sequence: caseInputs, counterexamples: [
-    { at_ms: 5, address: 'Y1', expected: 0, actual: true, network_indexes: [1] },
-    { at_ms: 20, address: 'Y2', expected: 1, actual: false, network_indexes: scope.slice(2) },
-  ] })
-  const props = { implementation_review: { properties: { selected: {}, alternatives: {}, limitations: {}, reviewed_instructions: {}, assumptions: { type: 'array' } } }, io_example: {} }
-  let reads = 0
-  const tools = { register(d) { this.generator = d }, get() { return { parameters: { properties: props } } },
-    async execute({ name, arguments: args }) {
-      let data
-      if (name.endsWith('get_current_project')) data = { project_id: 'p', target_mode: 'ladder', version_count: 0 }
-      else if (name.endsWith('get_generation_context')) {
-        reads++
-        data = { delivery: { document_id: 'doc', page: 0, complete: true }, document: { project_id: 'p', plc_model: 'FX3U',
-          generation_context_id: 'same', generation_input: { request: raw, output_schema: { properties: { r: { items: { type: 'object' } } } } },
-          output_contract: { protocol: 'compact_ladder/1.3', tool: 'create_program_candidate' },
-          instruction_research: { families: { copy: ['BMOV'] }, ...(fixed ? { group_operations: ['BMOV'], executable_fragments: [{ id: 'range-bmov', syntax: 'FRAG range-bmov <S> <D> <N>' }] } : {}),
-            manual: { knowledge: ['original manual content'] } } } }
-      } else {
-        assert(name.endsWith('create_program_candidate')); submissions.push(structuredClone(args))
-        if (submissions.length === 1 || !fixed) {
-          const failure = { ok: false, error: { code: 'CANDIDATE_BEHAVIOR_MISMATCH', behavior_result: ioResult } }
-          return fixed ? { isError: true, error: { message: JSON.stringify(failure) } } : { value: { structuredContent: failure } }
-        }
-        data = { behavior_result: { status: 'passed_in_cases' } }
-      }
-      return { value: { structuredContent: { ok: true, data } } }
-    } }
-  const llm = { async *stream(options) {
-    const tool = options.tools[0], input = JSON.parse(options.messages[0].content[0].text)
-    calls.push(tool.name)
-    let value
-    if (tool.name === 'submit_ladder') {
-      assert.deepEqual(tool.parameters.properties.implementation_review.properties.compared_families.properties.copy, { type: 'string', enum: ['BMOV'] })
-      const fields = tool.parameters.properties.implementation_review
-      assert.equal(fields.required.includes('grouped_option'), fixed)
-      assert.equal(fields.required.includes('assumptions'), fixed)
-      assert.equal(tool.parameters.properties.io_example, undefined)
-      assert.equal(input.executable_fragments?.[0].id, fixed ? 'range-bmov' : undefined)
-      value = { implementation_review: { selected: 'Two outputs',
-        ...(fixed ? { grouped_option: { instruction: 'BMOV', comparison: 'One contiguous transfer.' }, assumptions: [] } : { alternatives: [] }),
-        compared_families: { copy: 'BMOV' } },
-        ladder: { r: original } }
-    } else {
-      assert.deepEqual(input.networks, scope.map(index => ({ index, network: first })))
-      assert.equal(input.instruction_research, undefined)
-      assert.deepEqual(input.counterexample.inputs, fixed ? caseInputs : inputSequence)
-      assert.deepEqual(input.counterexamples, ioResult.counterexamples)
-      assert.equal(input.counterexample.scan_ms, 5)
-      assert.equal(input.case_id, 'lamp')
-      value = { edits: [{ index: 1, networks: [next] }] }
-    }
-    yield { type: 'block-end', index: 0, block: { type: 'tool-call', name: tool.name, arguments: JSON.stringify(value) } }
-    yield { type: 'finish', reason: { kind: 'tool-calls' } }
-  } }
-  apply({ on() {}, get: name => ({ tools, llm })[name] })
-  const session = { snapshotEvents: () => [message(raw)], append: type => notices.push(type),
-    requestHeader: () => ({ config: { model: 'test', provider: 'test' } }) }
-  const result = await tools.generator.execute({ project_id: 'p' }, { agent: { session }, signal: new AbortController().signal })
-  assert.equal(reads, 1)
-  assert.deepEqual(calls, ['submit_ladder', 'repair_networks'])
-  assert.deepEqual(notices, [])
-  assert.equal(submissions.length, 2)
-  assert.deepEqual(submissions[1], { ...submissions[0], ladder: { r: original.map((row, index) => index === 1 ? next : row) } })
-  assert.deepEqual(submissions[0].implementation_review.reviewed_instructions, ['BMOV'])
-  if (fixed) assert.deepEqual(submissions[0].implementation_review.alternatives,
-    [{ method: 'BMOV', tradeoff: 'One contiguous transfer.' }])
-  assert.equal(fixed ? result.candidate.behavior_result.status : result.status, fixed ? 'passed_in_cases' : 'behavior_mismatch')
-})
-
-test('verification notice renders in the chat without becoming a model message', () => {
-  let plugin, definition, renderer, dictionaries
-  runInNewContext(readFileSync(new URL('../client.mjs', import.meta.url), 'utf8'), {
-    window: { __ModuleLoader__: { load(module) {
-      assert.equal(module.id, 'dsh-gxworks')
-      plugin = module.factory(name => {
-        assert.equal(name, 'react')
-        return { createElement: (tag, props, text) => ({ tag, props, text }) }
-      })
-    } } },
-  })
-  plugin.apply({
-    effect: callback => callback(),
-    locale: { register: (_namespace, values) => { dictionaries = values } },
-    uiConversation: { events: { register: value => { definition = value } } },
-    slots: { inject: (_name, callback) => callback(), register: (_options, component) => { renderer = component } },
-  })
-  assert.equal(definition.match({ type: 'assistant/message' }), null)
-  const event = { type: 'dsh-gxworks/verification-started', seq: 7, data: {}, ignorable: true }
-  const match = definition.match(event)
-  const node = definition.buildViewNode({ key: 'notice:7', id: match.id,
-    start: { event, location: { kind: 'session' } } })
-  assert.equal(node.visibility, 'visible')
-  assert.equal(node.anchorSeq, 7)
-  assert.equal(node.target, 'chat')
-  for (const language of ['zh', 'en']) {
-    const rendered = renderer({ t: key => dictionaries[language][key] })
-    assert.equal(rendered.props.role, 'status')
-    assert.equal(rendered.text, dictionaries[language].started)
-  }
 })
 
 test('a draft that only lacks user facts still opens the window and submits the answers', async () => {
@@ -466,107 +167,8 @@ test('an unanswered required parameter keeps the same draft for the next window'
   assert.deepEqual(decision.next_actions[0].arguments, {})
 })
 
-test('a stray quote inside prose does not discard the submitted draft', () => {
-  const broken = '{"summary":"用 D0 计数","approaches":[{"name":"整字移位循环","description":"按 D0 回 0 后 "重置" 历史","approach_id":"word"}]}'
-  const parsed = parseJsonText(broken)
-  assert.equal(parsed.value.approaches[0].description, '按 D0 回 0 后 "重置" 历史')
-  assert.equal(parseJsonText('{"a":1,}').value.a, 1)
-  assert.equal(parseJsonText('not json at all').error !== undefined, true)
-})
-
-test('only the named submission counts; provider noise is ignored', () => {
-  const calls = [{ name: 'read_file', arguments: '{}' }, { name: 'submit_design_plan', arguments: '{"a":1}' }]
-  assert.equal(pickSubmission(calls, 'submit_design_plan').call.arguments, '{"a":1}')
-  assert.match(pickSubmission(calls, 'submit_ladder').error, /submit_ladder/u)
-  assert.match(pickSubmission([{ name: 'submit_ladder', arguments: '{}' }, { name: 'submit_ladder', arguments: '{}' }],
-    'submit_ladder').error, /2/u)
-})
-
-test('the whole Design → answers → confirmation → generation loop runs without the outer model', async () => {
-  const hooks = {}, asked = [], calls = []
-  const review = { selected: 'BMOV 整组搬运', alternatives: [],
-    compared_families: { copy: 'BMOV' }, reviewed_instructions: [] }
-  const draft = { draft_id: 'd5', user_requirement: 'D0 计数，件间回 0，停机后保留在途物料。',
-    review: { summary: '整字移位历史', approaches: [{ name: '整字移位循环', approach_id: 'word', description: '整字移位' }],
-      parameters: [{ id: 'stop_wip', name: '停机后在途物料怎样处理', required: true, value: '', options: ['保留在途物料', '清除'] }] },
-    issues: { errors: [{ code: 'required_parameter_missing', path: '$.parameters[0].value', message: '必填参数尚未填写' }] } }
-  const doc = { project_id: 'p', plc_model: 'FX3U', workflow_mode: 'detailed', generation_context_id: 'receipt',
-    generation_instructions: 'Web 协议', output_contract: { protocol: 'compact_ladder/1.3', tool: 'create_program_candidate' },
-    generation_input: { request: draft.user_requirement, output_schema: { type: 'object', required: ['r'],
-      properties: { r: { type: 'array', items: { type: 'object' } } } } },
-    instruction_research: { families: { copy: ['BMOV'] }, manual: { coverage: { status: 'complete' }, knowledge: [] } } }
-  const props = { implementation_review: { properties: { selected: {}, alternatives: {}, limitations: {},
-    reviewed_instructions: {}, assumptions: { type: 'array' } } }, io_example: {} }
-  const tools = {
-    register(definition) { this.generator = definition },
-    get() { return { parameters: { properties: props } } },
-    async execute({ name, arguments: args }) {
-      calls.push(name.slice('mcp__gxworks__'.length))
-      let data
-      if (name.endsWith('get_current_project')) data = { project_id: 'p', target_mode: 'ladder', version_count: 0 }
-      else if (name.endsWith('get_design_context')) data = { analysis_id: 'a1', analysis_instructions: '设计协议',
-        analysis_schema: { type: 'object', required: ['summary', 'approaches'],
-          properties: { summary: { type: 'string' }, approaches: { type: 'array', items: { type: 'object' } } } },
-        knowledge: {}, instruction_research: null,
-        delivery: { page: 0, document_id: 'design-doc', complete: true },
-        document: { analysis_id: 'a1', knowledge: {}, instruction_research: null,
-          analysis_schema: { type: 'object', required: ['summary', 'approaches'],
-            properties: { summary: { type: 'string' }, approaches: { type: 'array', items: { type: 'object' } } } } } }
-      else if (name.endsWith('propose_design_plan')) {
-        assert.equal(args.analysis.approaches[0].name, '整字移位循环')
-        assert.equal(hooks['tools/post-execute'] !== undefined, true, 'the hook stays registered for top-level calls')
-        data = structuredClone(draft)
-      } else if (name.endsWith('confirm_design_plan')) {
-        assert.deepEqual(args.parameter_answers, { stop_wip: '保留在途物料' })
-        data = { confirmed: true, project_id: 'p', target_mode: 'ladder', approach_id: 'word' }
-      } else if (name.endsWith('get_generation_context')) {
-        data = { delivery: { page: 0, document_id: 'gen-doc', complete: true }, document: doc }
-      } else {
-        assert(name.endsWith('create_program_candidate'))
-        data = { candidate_id: 'c1', version_id: 'v0001',
-          delivery: { preferred_format: 'gxw', actual_format: 'gxw', degraded: false } }
-      }
-      return { isError: false, value: { structuredContent: { ok: true, data } } }
-    },
-  }
-  const llm = { async *stream(options) {
-    const tool = options.tools[0]
-    let text
-    if (tool.name === 'submit_design_plan') {
-      // A real model once emitted a bare quote inside prose here.
-      text = '{"summary":"用 D0 计数","approaches":[{"approach_id":"word","name":"整字移位循环",'
-        + '"description":"按 D0 回 0 后 "重置" 历史","implementation_semantics":[]}],'
-        + '"missing_info":[{"id":"stop_wip","question":"停机后在途物料怎样处理","required":true,"options":["保留在途物料","清除"]}]}'
-    } else {
-      text = JSON.stringify({ implementation_review: { ...review, compared_families: { copy: 'BMOV' } },
-        ladder: { networks: [{ shared_contacts: [], output_branches: [{ series_contacts: [], outputs: ['BMOV D0 D10 K4'] }] }] } })
-    }
-    yield { type: 'block-end', index: 0, block: { type: 'tool-call', name: tool.name, arguments: text } }
-    yield { type: 'finish', reason: { kind: 'tool-calls' } }
-  } }
-  const file = new URL('./requirements.test.mjs', import.meta.url)
-  const answers = { ask: async ({ questions }) => {
-    asked.push(questions.map(question => question.id))
-    const [choice, parameter] = questions
-    return { answers: [{ id: choice.id, selected: [choice.options[0].label] },
-      { id: parameter.id, selected: ['保留在途物料'] }] }
-  } }
-  apply({ on: (name, callback) => { hooks[name] = callback },
-    get: name => ({ tools, llm, userQuestions: answers })[name] })
-  const session = { snapshotEvents: () => [message(draft.user_requirement)],
-    requestHeader: () => ({ config: { model: 'test', provider: 'test' } }) }
-  const result = await tools.generator.execute({ project_id: 'p', stage: 'design' },
-    { agent: { session }, signal: new AbortController().signal, callId: 'outer' })
-  assert.deepEqual(asked, [['gxworks-design', 'gxworks-parameter-stop_wip']])
-  assert.deepEqual(calls, ['get_current_project', 'get_design_context', 'propose_design_plan',
-    'confirm_design_plan', 'get_generation_context', 'create_program_candidate'])
-  assert.equal(result.candidate.version_id, 'v0001')
-  assert.equal(result.model_calls, 2)
-  void file
-})
-
 test('the confirmation window shows the instructions the draft would use', async () => {
-  const { reviewDesign } = await import('../launch/generate-ladder.mjs')
+  const { reviewDesign } = await import('../launch/design-review.mjs')
   let detail
   const ctx = { get: name => name === 'userQuestions' ? { ask: async ({ questions }) => {
     detail = questions[0].detail
@@ -583,63 +185,12 @@ test('the confirmation window shows the instructions the draft would use', async
   assert.match(detail, /同色连续时不复位/u)
 })
 
-test('a direct-mode choice made in a question window counts as human intent', () => {
-  const directLabel = '方案A：移位寄存器追踪（推荐，直接生成）'
-  const compareLabel = '先比较 2~3 个设计方案再生成'
-  const asked = { type: 'tool/call', data: { name: 'ask_user_question', callId: 'c1',
-    arguments: JSON.stringify({ questions: [{ id: 'mode', question: '选一个方式', options: [
-      { label: directLabel }, { label: compareLabel },
-    ] }] }) } }
-  const reply = { type: 'tool/result', data: { message: { toolCallId: 'c1', isError: false,
-    content: [{ type: 'text', text: JSON.stringify({ answers: [{ id: 'mode', selected: [directLabel] }] }) }] } } }
-  const direct = { generation_mode: 'direct' }
-  assert.equal(evaluate('create_project', direct, [message('按下面的 IO 表写程序。'), asked, reply]), 'allowed')
-  const compare = { type: 'tool/result', data: { message: { toolCallId: 'c1', isError: false,
-    content: [{ type: 'text', text: JSON.stringify({ answers: [{ id: 'mode', selected: [compareLabel] }] }) }] } } }
-  assert.equal(evaluate('create_project', direct, [message('按下面的 IO 表写程序。'), asked, compare]).kind, 'deny')
-})
-
 test('the design call can omit the requirement or pass a legacy value', async () => {
   const original = 'FX3U。D0 分类，1~3 蓝，4~6 绿，7~9 灰。相邻两件之间 D0 回零一次。'
   for (const args of [{}, { user_requirement: 'FX3U，D0 做颜色分类，蓝绿灰三路分拣。' }]) {
     assert.deepEqual(await dispatch('get_design_context', args, [message(original)]), { user_requirement: original })
   }
   assert.deepEqual(await dispatch('get_design_context', { user_requirement: '模型代写。' }, []), { user_requirement: '' })
-})
-
-test('a generator failure reaches the model with its real message', async () => {
-  const tools = { register(definition) { this.generator = definition },
-    get() { return { parameters: { properties: { implementation_review: { properties: {
-      selected: {}, alternatives: {}, limitations: {}, reviewed_instructions: {} } } } } } },
-    async execute() { throw Error('请用相关的完整用户消息传入 user_requirement。') } }
-  apply({ on() {}, get: name => ({ tools, llm: { stream() {} } })[name] })
-  const result = await tools.generator.execute({ project_id: 'p' },
-    { agent: { session: { snapshotEvents: () => [message('原始需求')] } }, signal: new AbortController().signal })
-  assert.equal(result.status, 'error')
-  assert.match(result.error, /完整用户消息/u)
-  assert.doesNotMatch(result.error, /Tool batch execution failed/u)
-})
-
-test('a batch-capable host receives nested calls through its batch executor', async () => {
-  const batches = []
-  const tools = {
-    register(definition) { this.generator = definition },
-    get() { return { parameters: { properties: { implementation_review: { properties: {
-      selected: {}, alternatives: {}, limitations: {}, reviewed_instructions: {} } } } } } },
-    selectExecutor() { return undefined },
-    async execute(request) {
-      assert(Array.isArray(request.calls), 'batch hosts must receive calls[]')
-      batches.push(request.calls[0].name)
-      const data = request.calls[0].name.endsWith('get_current_project')
-        ? { project_id: 'p', target_mode: 'st', version_count: 1 } : {}
-      return { results: [{ id: request.calls[0].id, result: { isError: false, value: { structuredContent: { ok: true, data } } } }] }
-    },
-  }
-  apply({ on() {}, get: name => ({ tools, llm: { stream() {} } })[name] })
-  const result = await tools.generator.execute({ project_id: 'p' },
-    { agent: { session: { snapshotEvents: () => [message('x')] } }, signal: new AbortController().signal })
-  assert.deepEqual(batches, ['mcp__gxworks__get_current_project'])
-  assert.match(result.error, /Ladder 工程|版本/u)
 })
 
 test('the confirmation window stays short and speaks the user language', async () => {
@@ -670,7 +221,7 @@ test('the confirmation window stays short and speaks the user language', async (
   assert.match(detail, /指令：WSFL/u)
   assert.match(detail, /关键实现：✓自锁保持 ✓边沿触发/u)
   assert.match(detail, /待确认参数：停机后在途物料怎样处理/u)
-  assert.match(detail, /I\/O X1 启动、X3 停止\(NC\)/u)
+  assert.match(detail, /I\/O X1 启动、X3 停止 \(有效电平=0\)/u)
   assert(detail.length < 1200, 'window stays short: ' + detail.length)
 
   const english = structuredClone(draft)
@@ -713,100 +264,6 @@ test('a language without a label table gets a neutral symbol layout', async () =
   assert.equal(question.options[question.options.length - 1].label, '✎')
 })
 
-test('batch-host hooks do not re-intercept nested Design calls, and repairDesign handles typed values without instruction_details', async () => {
-  const hooks = {}, asked = [], seenDesignArgs = [], seenProposeArgs = []
-  const draftNeedsRepair = {
-    status: 'repair_required', analysis_id: 'a1', repair_id: 'rep-1',
-    draft_id: 'd-rep', user_requirement: 'FX3U: X0->Y0, T0 K50 延时',
-    review: { summary: '延时控制', approaches: [{ name: '定时器保持', approach_id: 'timer', description: 'T0 延时' }], parameters: [] },
-    issues: { errors: [{ code: 'ungrounded_claim', path: '$.explicit_constraint_claims[0]', message: 'bad claim' }] },
-    repair_targets: [{
-      path: '$.explicit_constraint_claims[0]', mode: 'claim', reason: 'inferred_claim_not_grounded',
-      current_value: { summary: '延时启动', evidence: ['fake'] },
-      value_schema: { type: 'object', properties: { summary: { type: 'string' }, inferred: { type: 'boolean' } } },
-    }],
-  }
-  const draftClean = {
-    draft_id: 'd-rep', user_requirement: draftNeedsRepair.user_requirement,
-    review: draftNeedsRepair.review, issues: { errors: [] }, repair_targets: [],
-  }
-  const genDoc = {
-    project_id: 'p', plc_model: 'FX3U', workflow_mode: 'detailed', generation_context_id: 'rcpt',
-    generation_instructions: 'Web', output_contract: { protocol: 'compact_ladder/1.3', tool: 'create_program_candidate' },
-    generation_input: { request: draftNeedsRepair.user_requirement, output_schema: { type: 'object', required: ['r'], properties: { r: { type: 'array', items: { type: 'object' } } } } },
-    instruction_research: { families: {}, manual: { coverage: { status: 'complete' }, knowledge: [] } },
-  }
-  const props = { implementation_review: { properties: { selected: {}, alternatives: {}, limitations: {}, reviewed_instructions: {} } } }
-  const tools = {
-    register(definition) { this.generator = definition },
-    get() { return { parameters: { properties: props } } },
-    selectExecutor() { return undefined },
-    async execute(request) {
-      const results = []
-      for (const call of request.calls) {
-        const parsedArgs = typeof call.arguments === 'string' ? JSON.parse(call.arguments) : call.arguments
-        const exec = { callId: call.id, name: call.name, arguments: parsedArgs, agent: { session } }
-        const pre = hooks['tools/pre-execute'](exec, () => 'allowed')
-        assert.equal(pre, 'allowed', `nested call ${call.name} should not be blocked by pre-execute`)
-        let data
-        if (call.name.endsWith('get_current_project')) data = { project_id: 'p', target_mode: 'ladder', version_count: 0 }
-        else if (call.name.endsWith('get_design_context')) {
-          seenDesignArgs.push(structuredClone(parsedArgs))
-          data = { delivery: { page: 0, document_id: 'dd', complete: true }, document: {
-            analysis_id: 'a1', analysis_instructions: '设计', knowledge: {},
-            analysis_schema: { type: 'object', required: ['summary', 'approaches'], properties: { summary: { type: 'string' }, approaches: { type: 'array', items: { type: 'object' } } } },
-          } }
-        } else if (call.name.endsWith('propose_design_plan')) {
-          seenProposeArgs.push(structuredClone(parsedArgs))
-          data = parsedArgs.repairs ? structuredClone(draftClean) : structuredClone(draftNeedsRepair)
-        } else if (call.name.endsWith('confirm_design_plan')) {
-          data = { confirmed: true, project_id: 'p', target_mode: 'ladder', approach_id: 'timer' }
-        } else if (call.name.endsWith('get_generation_context')) {
-          data = { delivery: { page: 0, document_id: 'gd', complete: true }, document: genDoc }
-        } else if (call.name.endsWith('create_program_candidate')) {
-          data = { candidate_id: 'c1', version_id: 'v0001', delivery: { preferred_format: 'gxw', actual_format: 'gxw', degraded: false } }
-        }
-        let rawResult = { isError: false, value: { structuredContent: { ok: true, data } } }
-        const post = await hooks['tools/post-execute'](exec, rawResult, async () => ({ kind: 'accept' }))
-        if (post?.value) rawResult = post.value
-        results.push({ id: call.id, result: rawResult })
-      }
-      return { results }
-    },
-  }
-  const llm = { async *stream(options) {
-    const tool = options.tools[0]
-    let payload
-    if (tool.name === 'submit_design_plan') {
-      payload = { summary: '延时控制', approaches: [{ approach_id: 'timer', name: '定时器保持', description: 'T0 延时' }] }
-    } else if (tool.name === 'submit_design_repairs') {
-      payload = { repairs: [{ path: '$.explicit_constraint_claims[0]', value: { summary: '延时启动', inferred: true } }] }
-    } else {
-      payload = { implementation_review: { selected: 'OUT T0' }, ladder: { networks: [{ shared_contacts: ['NO X0'], output_branches: [{ series_contacts: [], outputs: ['TIMER T0 K50'] }] }] } }
-    }
-    yield { type: 'block-end', index: 0, block: { type: 'tool-call', name: tool.name, arguments: JSON.stringify(payload) } }
-    yield { type: 'finish', reason: { kind: 'tool-calls' } }
-  } }
-  const userQuestions = { ask: async ({ questions }) => {
-    asked.push(questions)
-    return { answers: [{ id: questions[0].id, selected: [questions[0].options[0].label] }] }
-  } }
-  const session = { snapshotEvents: () => [message(draftNeedsRepair.user_requirement)],
-    requestHeader: () => ({ config: { model: 'test', provider: 'test' } }) }
-  apply({ on: (name, cb) => { hooks[name] = cb }, get: name => ({ tools, llm, userQuestions })[name] })
-  const out = await tools.generator.execute({ project_id: 'p', stage: 'design' },
-    { agent: { session }, signal: new AbortController().signal, callId: 'outer-batch' })
-  assert.equal(out.candidate.version_id, 'v0001')
-  assert.equal(asked.length, 1, 'reviewDesign runs once inside generate-ladder without post-execute double popup')
-  assert.equal(asked[0][0].header, '工程设计', 'device-heavy Chinese requirement still resolves to zh locale')
-  assert.deepEqual(seenDesignArgs, [{ user_requirement: draftNeedsRepair.user_requirement }])
-  assert.equal(seenProposeArgs.length, 2)
-  assert.deepEqual(seenProposeArgs[1], {
-    analysis_id: 'a1', repair_id: 'rep-1',
-    repairs: [{ path: '$.explicit_constraint_claims[0]', value: { summary: '延时启动', inferred: true } }],
-  })
-})
-
 test('only explicit question-window answers enter the requirement', async () => {
   const askCall = { type: 'tool/call', data: { name: 'ask_user_question', callId: 'q1',
     arguments: JSON.stringify({ questions: [{ id: 'stop_mode', question: '停机时清零还是保持 D0？', options: [
@@ -825,52 +282,6 @@ test('only explicit question-window answers enter the requirement', async () => 
       user_requirement: 'X0 启动电机。\n清零复位：清零 D0\n同时关闭Y0\n问题：启动延时多久？\n用户答复：5 秒\nX1 急停。',
     })
   }
-})
-
-test('the generator merges session messages with design-window revision notes', async () => {
-  const hooks = {}
-  let seenReq
-  const tools = {
-    register(d) { this.generator = d },
-    get() { return { parameters: { properties: { implementation_review: { properties: { selected: {}, alternatives: {}, limitations: {}, reviewed_instructions: {} } } } } } },
-    async execute({ name, arguments: args }) {
-      let data = {}
-      if (name.endsWith('get_current_project')) data = { project_id: 'p', target_mode: 'ladder', version_count: 0 }
-      else if (name.endsWith('get_generation_context')) {
-        seenReq = args.user_requirement
-        data = { delivery: { page: 0, document_id: 'gd', complete: true }, document: {
-          project_id: 'p', plc_model: 'FX3U', workflow_mode: 'direct_generation', generation_context_id: 'r1',
-          generation_instructions: 'Web', output_contract: { protocol: 'compact_ladder/1.3', tool: 'create_program_candidate' },
-          generation_input: { request: args.user_requirement, output_schema: { type: 'object', properties: { r: { type: 'array' } } } },
-          instruction_research: { families: {}, manual: { coverage: { status: 'complete' }, knowledge: [] } },
-        } }
-      } else if (name.endsWith('create_program_candidate')) {
-        data = { candidate_id: 'c1', version_id: 'v0001', delivery: { preferred_format: 'gxw', actual_format: 'gxw', degraded: false } }
-      }
-      return { isError: false, value: { structuredContent: { ok: true, data } } }
-    },
-  }
-  const llm = { async *stream(options) {
-    yield { type: 'block-end', index: 0, block: { type: 'tool-call', name: options.tools[0].name,
-      arguments: JSON.stringify({ implementation_review: { selected: 'COIL' }, ladder: { networks: [{ shared_contacts: ['NO X0'], output_branches: [{ series_contacts: [], outputs: ['COIL Y0'] }] }] } }) } }
-    yield { type: 'finish', reason: { kind: 'tool-calls' } }
-  } }
-  const userQuestions = { ask: async ({ questions: [q] }) => ({
-    answers: [{ id: q.id, selected: [q.options[q.options.length - 1].label], custom: '补充急停 X1 常闭切断' }],
-  }) }
-  apply({ on: (name, cb) => { hooks[name] = cb }, get: name => ({ tools, llm, userQuestions })[name] })
-  const session = { snapshotEvents: () => [message('X0 启动 Y0'), message('停机时清零 D0。')],
-    requestHeader: () => ({ config: { model: 'm', provider: 'p' } }) }
-  await hooks['tools/post-execute']({ name: 'mcp__gxworks__propose_design_plan', agent: { session } }, {
-    isError: false, value: { structuredContent: { ok: true, data: {
-      draft_id: 'd-rev', user_requirement: 'X0 启动 Y0',
-      review: { summary: '启停', approaches: [{ name: '自锁', approach_id: 'a1' }] }, issues: { errors: [] },
-    } } },
-  }, async () => ({ kind: 'accept' }))
-  const gen = await tools.generator.execute({ project_id: 'p', user_requirement: '模型转述。' },
-    { agent: { session }, signal: new AbortController().signal, callId: 'rev-gen' })
-  assert.equal(gen.candidate.version_id, 'v0001')
-  assert.equal(seenReq, 'X0 启动 Y0\n停机时清零 D0。\n补充急停 X1 常闭切断')
 })
 
 test('partial parameter answers re-prompt only remaining questions, and diacritic Latin uses neutral layout', async () => {
@@ -918,64 +329,62 @@ test('partial parameter answers re-prompt only remaining questions, and diacriti
   })
 })
 
-test('saveWithBehaviorCheck does not mutate original program if patched save fails compilation', async () => {
-  const raw = 'Light Y0 on X0.'
-  const goodNet = { c: ['NO X0'], b: [{ i: [], o: ['COIL Y0'] }] }
-  const badPatchNet = { c: ['NO X999'], b: [{ i: [], o: ['COIL Y0'] }] }
-  const decisions = { selected: 0 }
-  const submissions = []
-  let callIndex = 0
-  const props = { implementation_review: { properties: { selected: {}, alternatives: {}, limitations: {}, reviewed_instructions: {} } } }
-  const tools = {
-    register(d) { this.generator = d },
-    get() { return { parameters: { properties: props } } },
-    async execute({ name, arguments: args }) {
-      if (name.endsWith('get_current_project')) return { value: { structuredContent: { ok: true, data: { project_id: 'p', target_mode: 'ladder', version_count: 0 } } } }
-      if (name.endsWith('get_generation_context')) return { value: { structuredContent: { ok: true, data: {
-        delivery: { document_id: 'doc', page: 0, complete: true },
-        document: {
-          project_id: 'p', plc_model: 'FX3U', generation_context_id: 'ctx1',
-          generation_input: { request: raw, output_schema: { properties: {
-            program: { properties: { r: { items: { type: 'object' } } } },
-          } } },
-          output_contract: { protocol: 'compact_ladder/1.3', tool: 'create_program_candidate' },
-          instruction_research: { families: {}, manual: { coverage: { status: 'complete' }, knowledge: [] } },
-        },
-      } } } }
-      submissions.push(structuredClone(args.ladder))
-      callIndex++
-      if (callIndex === 1) {
-        return { value: { structuredContent: { ok: false, error: {
-          code: 'CANDIDATE_BEHAVIOR_MISMATCH',
-          behavior_result: { status: 'mismatch', case_id: 'c1', address: 'Y0', at_ms: 5, scan_ms: 5, expected: 1, actual: 0, input_sequence: [], network_indexes: [0] },
-        } } } }
-      }
-      if (callIndex === 2) {
-        return { isError: true, error: { message: 'Invalid operand X999 at $.r[0]' } }
-      }
-      return { value: { structuredContent: { ok: true, data: { candidate_id: 'c-ok', version_id: 'v0001' } } } }
-    },
+
+
+test('all language workflows use upstream tools and next actions without a private generator', async () => {
+  const hooks = {}, registered = []
+  apply({ on: (name, hook) => { hooks[name] = hook },
+    get: name => name === 'tools' ? { register: tool => registered.push(tool) } : undefined })
+  assert.deepEqual(registered, [])
+  for (const target_mode of ['ladder', 'st', 'fbd', 'sfc']) {
+    const value = { structuredContent: { ok: true, data: { project: { target_mode },
+      next_actions: [{ tool: 'get_generation_context', arguments: { workflow: 'direct_generation' } }] } } }
+    const decision = { kind: 'accept' }
+    assert.equal(await hooks['tools/post-execute']({ name: 'mcp__gxworks__create_project', agent: {} },
+      { value }, async () => decision), decision)
+    const args = { generation_mode: 'direct', target_mode }
+    assert.equal(evaluate('create_project', args, [message('完整的操作顺序。')]), 'allowed')
   }
-  const seenPrompts = []
-  const llm = { async *stream(options) {
-    const tool = options.tools[0]
-    seenPrompts.push({ name: tool.name, text: options.messages[0].content[0].text })
-    let val
-    if (tool.name === 'submit_ladder') {
-      val = { implementation_review: { selected: 'COIL' }, ladder: { decisions, program: { r: [goodNet] } } }
-    } else {
-      val = { edits: [{ index: 0, networks: [badPatchNet] }] }
+})
+
+
+test('complete upstream reads and errors pass through unchanged', async () => {
+  const hooks = {}
+  apply({ on: (name, hook) => { hooks[name] = hook } })
+  for (const tool of ['get_generation_context', 'get_design_context', 'search_plc_manual', 'get_fbd_catalog', 'gxworks_read_context_unit']) {
+    for (const isError of [false, true]) {
+      const body = isError ? { ok: false, error: { code: 'HOST_CONTEXT_TOO_LARGE' } } : {
+        ok: true, data: { document: { output_contract: { protocol: 'compact_ladder/1.4' },
+          input_conditions: [{ condition_ref: 'stop', when: 'run_permit' }],
+          operation_bindings: [{ form_ref: 'move', parameters: ['source', 'destination'] }],
+          output_schema: { anyOf: [{ required: ['timer', 'duration_ms', 'tick_ms'] }] } },
+        delivery: { complete: true } },
+      }
+      const result = { isError, value: { content: [{ type: 'text', text: JSON.stringify(body) }] } }
+      const before = structuredClone(result), decision = { kind: 'accept' }
+      assert.equal(await hooks['tools/post-execute']({ name: 'mcp__gxworks__' + tool, arguments: {}, agent: {} },
+        result, async () => decision), decision)
+      assert.deepEqual(result, before)
     }
-    yield { type: 'block-end', index: 0, block: { type: 'tool-call', name: tool.name, arguments: JSON.stringify(val) } }
-    yield { type: 'finish', reason: { kind: 'tool-calls' } }
-  } }
-  apply({ on() {}, get: name => ({ tools, llm })[name] })
-  const session = { snapshotEvents: () => [message(raw)], requestHeader: () => ({ config: { model: 'm', provider: 'p' } }) }
-  const out = await tools.generator.execute({ project_id: 'p' }, { agent: { session }, signal: new AbortController().signal })
-  assert.equal(out.status, 'repair_required')
-  assert.equal(submissions.length, 2)
-  assert.deepEqual(submissions[0], { decisions, program: { r: [goodNet] } })
-  assert.deepEqual(submissions[1], { decisions, program: { r: [badPatchNet] } })
-  // recover() returns the compilable initial program rather than the broken patched network.
-  assert.deepEqual(out.draft.ladder, submissions[0])
+  }
+})
+
+
+test('the confirmation window retains upstream output behavior and does not infer contact type from signal level', async () => {
+  let detail
+  const ctx = { get: () => ({ ask: async ({ questions }) => {
+    detail = questions[0].detail
+    return { answers: [] }
+  } }) }
+  await reviewDesignShared(ctx, { agent: { session: {} } }, { ok: true, data: {
+    draft_id: 'd', user_requirement: '启动与停止', issues: { errors: [] }, review: {
+      summary: '按输入控制输出', io_bindings: [{ address: 'X1', label: '停止', active_level: 0 }],
+      approaches: [{ approach_id: 'a', name: '方案', output_logic: [{ target: 'Y0', state: '运行状态',
+        activation: '启动成立且停止未生效', update: '每扫描更新', release: '停止生效', interruption: '停止优先', selection: '普通输出赋值' }],
+        decision_basis: [{ variant: '方案', premise: '接线尚待确认', status: 'unknown', conclusion: 'conditional',
+          applicability_conditions: [{ premise: '现场条件未确定', status: 'unknown' }] }] }],
+    },
+  } })
+  for (const text of ['运行状态', '停止优先', '普通输出赋值', '接线尚待确认', 'conditional', '现场条件未确定', '有效电平=0']) assert(detail.includes(text), text)
+  assert(!detail.includes('(NC)'))
 })

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0
 
-import { designApprovals, explicitDirect, generatorName, humanText, isNestedGeneratorCall,
-  registerLadderGenerator, reviewDesign, revisedRequirements } from './launch/generate-ladder.mjs'
+import { designApprovals, reviewDesign, revisedRequirements } from './launch/design-review.mjs'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -9,7 +8,7 @@ import { bundledArchiveParts } from './launch/bundled-runtime.mjs'
 
 /** 插件名，与包名一致：patch 覆盖时按它定位。 */
 export const name = 'dsh-gxworks'
-export const inject = ['tools', 'llm', 'mcpManager']
+export const inject = ['tools', 'mcpManager']
 
 const packageRoot = dirname(fileURLToPath(import.meta.url))
 const required = ['launch/mcp-launch.mjs', 'launch/bundled-runtime.mjs',
@@ -58,13 +57,9 @@ function questionAnswers(events) {
   return answersByEvent
 }
 
-function questionChoices(session) {
-  return [...questionAnswers(session?.snapshotEvents?.() || []).values()].flat().map(answer => answer.text)
-}
-
-// A label needs no sentence punctuation: "方案A：…（推荐，直接生成）" is a choice.
-function chosenDirect(text = '') {
-  return /(?:直接|立即|马上)(?:帮我)?生成|跳过(?:方案|设计)?(?:对比|比较)?确认|direct\s*(?:mode|generation)|快捷生成/iu.test(text)
+function humanText(event) {
+  if (event.type !== 'user/message' || event.data?.source?.kind !== 'user') return ''
+  return event.data.content.filter(block => block.type === 'text').map(block => block.text).join('\n')
 }
 
 function sessionRequirement(session) {
@@ -95,18 +90,16 @@ export function apply(ctx) {
   // The rc.3 manager owns connection status, reconnects and plugin disposal.
   ctx.mcpManager.register('gxworks', {
     transport: 'stdio', command: process.execPath,
-    args: [join(packageRoot, 'launch', 'mcp-launch.mjs')],
+    args: [join(packageRoot, 'launch', 'mcp-launch.mjs'), '--read-budget-tokens', '128000'],
     // DSH scrubs its own variables from subprocesses unless explicitly passed.
     env: process.env.DSH_HOME ? { DSH_HOME: process.env.DSH_HOME } : {},
     startupTimeoutMs: 600000, toolCallTimeoutMs: 600000, closeTimeoutMs: 10000,
     reconnect: { enabled: true, maxAttempts: 3 },
   })
-  const supportsGenerator = Boolean(ctx.get?.('llm')?.stream && ctx.get?.('tools')?.register)
-  if (supportsGenerator) registerLadderGenerator(ctx, sessionRequirement)
   ctx.on('tools/execute', async (exec, next) => {
     const session = exec.agent?.session
     const args = exec.arguments
-    if (!session || !args || args.cursor || isNestedGeneratorCall(exec)) return next()
+    if (!session || !args || args.cursor) return next()
     const design = exec.name === 'mcp__gxworks__get_design_context'
     const generation = exec.name === 'mcp__gxworks__get_generation_context'
       && args.workflow !== 'detailed' && (args.workflow === 'direct_generation' || Object.hasOwn(args, 'user_requirement'))
@@ -118,68 +111,26 @@ export function apply(ctx) {
     return next()
   })
   ctx.on('tools/post-execute', async (exec, result, next) => {
-    // Nested calls made inside gxworks_generate_ladder (including through batch
-    // executors that omit exec.parent) must never re-enter outer review or routing.
-    if (result.isError || !exec.agent || isNestedGeneratorCall(exec)) return next()
-    if (supportsGenerator && ['mcp__gxworks__create_project', 'mcp__gxworks__confirm_design_plan'].includes(exec.name)) {
-      const decision = await next()
-      const body = result.value?.structuredContent
-      const data = body?.data
-      if (decision.kind !== 'accept' || decision.value !== undefined || decision.content !== undefined ||
-          (data?.project?.target_mode || data?.target_mode) !== 'ladder' ||
-          !['get_generation_context', 'get_design_context'].includes(data.next_actions?.[0]?.tool)) return decision
-      const design = data.next_actions[0].tool === 'get_design_context'
-      const routed = { ...body, data: { ...data, next_actions: [{ tool: generatorName,
-        arguments: { project_id: data.selected_project_id || data.project_id, ...(design ? { stage: 'design' } : {}) } }] } }
-      return { ...decision, value: { ...result.value, structuredContent: routed,
-        content: [{ type: 'text', text: JSON.stringify(routed) }] } }
-    }
+    if (result.isError || !exec.agent || !exec.name.startsWith('mcp__gxworks__')) return next()
     if (exec.name !== 'mcp__gxworks__propose_design_plan') return next()
     const decision = await next()
     if (decision.kind !== 'accept' || decision.value !== undefined || decision.content !== undefined) return decision
-    // The generator reviews its own nested draft inside execute(), where waiting
-    // on the human does not hold up the rest of the model's tool batch.
-    if (exec.parent !== undefined) return decision
     const reviewed = await reviewDesign(ctx, exec, result.value?.structuredContent)
     if (!reviewed) return decision
     if (reviewed.block) return { kind: 'block', feedback: [{ type: 'text', text: reviewed.block }] }
-    const body = { ...result.value.structuredContent, data: reviewed.data }
-    return { ...decision, value: { ...result.value, structuredContent: body,
-      content: [{ type: 'text', text: JSON.stringify(body) }] } }
+    const reviewedBody = { ...result.value.structuredContent, data: reviewed.data }
+    return { ...decision, value: { ...result.value, structuredContent: reviewedBody,
+      content: [{ type: 'text', text: JSON.stringify(reviewedBody) }] } }
   })
   ctx.on('tools/pre-execute', (exec, next) => {
     if (!exec.name.startsWith('mcp__gxworks__')) return next()
     const tool = exec.name.slice('mcp__gxworks__'.length)
     const args = exec.arguments
-    if (tool === 'confirm_design_plan') {
+    if (tool === 'confirm_design_plan' && exec.agent) {
       const approved = designApprovals.get(exec.agent?.session)
       if (!approved || approved.draft_id !== args.draft_id || approved.approach_id !== args.approach_id) {
         return { kind: 'deny', reason: '请先用 propose_design_plan({}) 展示草稿，并使用用户在确认窗口中选择的方案。' }
       }
-    }
-    if (!exec.agent || isNestedGeneratorCall(exec)) return next()
-    // The backend owns the semantic gate: its schema tells the model to choose
-    // direct by specification completeness (porting, complete sequences, FB
-    // authoring, explicit requests). Only enforce the hard floor here — the
-    // literal wording of a direct request — and let the MCP server judge the rest.
-    if (tool === 'create_project' && args.generation_mode === 'direct') {
-      const latest = (exec.agent.session?.snapshotEvents?.() || []).findLast(event => humanText(event).trim())
-      const requested = explicitDirect(latest && humanText(latest)) ||
-        questionChoices(exec.agent.session).some(choice => chosenDirect(choice))
-      if (!requested && !args.implementation_specified) {
-        return { kind: 'deny', reason: '直接模式仅用于：跨品牌移植/转写、已给出完整时序/公式/步骤的规格、确定性 FB 编写，或用户明确要求直接生成。'
-          + '开放式工艺需求请省略 generation_mode 走默认 Design；用户原话说“直接生成”时无需本参数之外的确认。' }
-      }
-    }
-    // Mirror the backend contract exactly: only Ladder candidates and new-FBD
-    // generation carry implementation_review in output_contract.required_fields
-    // (generation_tools.py). ST and SFC generation leave the review optional;
-    // the MCP server's check_review rejects with missing_families diagnostics
-    // and next_actions when one is genuinely needed.
-    if ((tool === 'create_program_candidate' ||
-         (tool === 'create_fbd_candidate' && args.operation === 'generate')) &&
-        !args.implementation_review) {
-      return { kind: 'deny', reason: '请先用用户原文取得生成上下文，按实际 CPU 查证相关指令并完成全部分页，比较后附上 implementation_review。' }
     }
     return next()
   })

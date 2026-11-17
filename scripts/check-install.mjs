@@ -11,7 +11,6 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { once } from 'node:events'
 
 const installed = resolve(process.argv[2] || join(dirname(fileURLToPath(import.meta.url)), '..'))
-const { readDocument } = await import(pathToFileURL(join(installed, 'launch', 'generate-ladder.mjs')).href)
 const scratch = await mkdtemp(join(tmpdir(), 'dsh-gxworks-install-'))
 const user = join(scratch, 'user')
 await mkdir(user)
@@ -26,7 +25,7 @@ Object.assign(env, {
 // Windows treats environment names case-insensitively; retain only the scrubbed PATH.
 for (const key of Object.keys(env)) if (key !== 'PATH' && key.toUpperCase() === 'PATH') delete env[key]
 const child = spawn(process.execPath, [join(installed, 'launch', 'mcp-launch.mjs'),
-  '--workspace', join(scratch, 'workspace'), '--state-dir', join(scratch, 'state')],
+  '--read-budget-tokens', '128000', '--workspace', join(scratch, 'workspace'), '--state-dir', join(scratch, 'state')],
 { cwd: scratch, env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
 const closed = once(child, 'close')
 let diagnostics = ''
@@ -84,6 +83,9 @@ try {
   for (const name of ['list_projects', 'create_project', 'search_plc_manual', 'get_generation_context']) {
     assert(tools.some(tool => tool.name === name), `缺少工具 ${name}`)
   }
+  for (const name of ['get_generation_context', 'get_design_context', 'search_plc_manual', 'get_fbd_catalog']) {
+    assert(!Object.hasOwn(tools.find(tool => tool.name === name).inputSchema.properties, 'read_budget_tokens'))
+  }
   await call('list_projects', {})
   const { data: discovery } = await call('list_gxworks2_sessions', {})
   assert.equal(typeof discovery.gx_works2_installed, 'boolean')
@@ -98,11 +100,11 @@ try {
   }
   const created = await call('create_project', { name: 'Bundled backend install check', plc_model: 'FX3U', target_mode: 'ladder' })
   async function readContext(tool, args) {
-    const result = await readDocument(async (name, input) => {
-      const response = await call(name, input)
-      return response.data ?? response
-    }, tool, args)
-    return result.content
+    const { data } = await call(tool, args)
+    assert.equal(data.context_schema_version, 4)
+    assert.equal(data.delivery.complete, true)
+    assert(!data.delivery.next, 'upstream must deliver a complete document')
+    return data.document
   }
   const document = await readContext('search_plc_manual', { query: 'PLSY 操作数', plc_model: 'FX3U', top_k: 2 })
   assert.equal(document.language, 'ladder')
@@ -127,11 +129,43 @@ try {
   assert.equal(saved.data.confirmed, true)
   const context = await readContext('get_generation_context', saved.data.next_actions[0].arguments)
   assert.equal(context.generation_input.confirmed_spec.selected_approach.approach_id, 'direct_contact')
+  assert.equal(context.output_contract.protocol, 'compact_ladder/1.4')
+  assert(context.generation_context_id)
+  assert(context.generation_input.output_schema)
+  const designCandidate = await call('create_program_candidate', {
+    generation_context_id: context.generation_context_id,
+    ladder: { r: [{ c: ['NO X0'], b: [{ i: [], o: ['COIL Y0'] }] }], device_comments: [] },
+  })
+  assert(designCandidate.data.version_id, JSON.stringify(designCandidate))
+  await call('create_project', { name: 'Upstream Direct timer check', plc_model: 'FX3U', target_mode: 'ladder', generation_mode: 'direct' })
+  const direct = await readContext('get_generation_context', { workflow: 'direct_generation',
+    user_requirement: '直接生成：X0 为 ON 时 T0 延时 5 秒，T0 到时驱动 Y0；X0 为 OFF 时定时器和 Y0 均复位。T0 使用 100ms 时基。' })
+  assert.equal(direct.output_contract.protocol, 'compact_ladder/1.4')
+  assert(direct.generation_input.output_schema.properties.result)
+  const directCandidate = await call('create_program_candidate', {
+    generation_context_id: direct.generation_context_id,
+    ladder: { result: {
+      decisions: { candidates: [{ method: 'T0 timer', tradeoff: 'One non-retentive timer.',
+        instruction_choices: [{ opcode: 'OUT', role: 'Timer and output coil' }], decision_basis: [] }], selected: 0, rationale: 'Follow the specified timer and reset behavior.' },
+      program: { r: [{ c: ['NO X0'], b: [{ i: [], o: [{ timer: 'T0', duration_ms: 5000, tick_ms: 100 }] }] },
+        { c: ['NO T0'], b: [{ i: [], o: ['COIL Y0'] }] }], device_comments: [] }, open_items: [],
+    } },
+  })
+  assert(directCandidate.data.version_id, JSON.stringify(directCandidate))
+  const languageContracts = {}
+  for (const [language, tool] of [['st', 'create_st_candidate'], ['fbd', 'create_fbd_candidate'], ['sfc', 'create_sfc_candidate']]) {
+    await call('create_project', { name: 'Upstream ' + language + ' contract check', plc_model: 'FX3U', target_mode: language, generation_mode: 'direct' })
+    const document = await readContext('get_generation_context', { user_requirement: 'X0 controls Y0', workflow: 'direct_generation' })
+    assert.equal(document.output_contract.tool, tool, JSON.stringify(document.output_contract))
+    languageContracts[language] = document.output_contract.tool
+  }
   assert(diagnostics.includes('安装根来源：bundled'), diagnostics)
   assert(diagnostics.includes('首次准备内置 GXWorks Agent'), diagnostics)
   process.stdout.write(`${JSON.stringify({ package: installed, server: initialized.serverInfo.name,
     tools: tools.length, backend: 'bundled', firstLaunchExtraction: 'passed',
     projectCreated: created.ok, factResults: rows.length, generationContext: 'passed',
+    upstreamDesignCandidate: designCandidate.data.version_id, upstreamDirectTimerCandidate: directCandidate.data.version_id,
+    languageContracts,
     gxWorks2Executable: discovery.gx_works2_executable, visibleWindows: discovery.sessions.length,
     pythonOnPath: false, externalAgentConfigured: false }, null, 2)}\n`)
 } catch (error) {

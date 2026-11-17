@@ -1,6 +1,6 @@
 {
   "name": "dsh-gxworks",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Read, generate and edit Mitsubishi PLC projects in DeepSeek Harness. Includes the GXWorks Agent MCP backend for Windows x64. GitHub project at https://github.com/Arienax/dsh-gxworks Bundled GXWorks Agent 0.4.2 is licensed under AGPL-3.0.",
   "license": "AGPL-3.0",
   "author": "Arienax",
@@ -18,17 +18,15 @@
   },
   "exports": {
     ".": "./index.mjs",
-    "./client": "./client.mjs",
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
   "files": [
     "index.mjs",
-    "client.mjs",
+    "launch/design-review.mjs",
     "cordis.patch.yml",
     "launch/mcp-launch.mjs",
-    "launch/generate-ladder.mjs",
     "launch/bundled-runtime.mjs",
     "runtime/backend.json",
     "runtime/README.md",
@@ -70,14 +68,6 @@
     "mitsubishi"
   ],
   "dsh": {
-    "client": {
-      "platform": "web",
-      "immediately": true,
-      "inject": [
-        "@deepseek-ai/dsh-client-ui-chat",
-        "@deepseek-ai/dsh-client-locale"
-      ]
-    },
     "bundle": {
       "patch": "./cordis.patch.yml"
     }

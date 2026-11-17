@@ -33,7 +33,9 @@ To install from GitHub, use `dsh plugin --profile web add github:Arienax/dsh-gxw
 
 Open a chat in the same profile and try one of these requests.
 
-New programs start in Design mode and use the approach you confirm. Say “direct mode” or use /gxworks-direct to generate immediately. For new Ladder programs, Desktop reads the CPU-specific manual and can use executable shift or copy fragments in a single generation. Verification results are returned with the candidate. Unresolved external writes to fragment storage remain advisory; the candidate is preserved even when its guard uses a different form. The backend can replay confirmed behavior conditions or independent I/O cases. A definite counterexample allows one repair of the affected networks. The result identifies behavior that still needs verification. [Independent case format](runtime/README.md#independent-io-cases)
+The DSH session model calls upstream MCP tools directly. The backend selects Direct or Design; Design proposals are confirmed through the host's question window. The plugin configures whole-document delivery in the upstream MCP server. Referenced facts use the upstream restore tool; the plugin does not assemble pages or rewrite results. DSH may retain a preview of long output with a full-file link; follow the host's instructions to read the complete result.
+
+The plugin no longer provides `gxworks_generate_ladder` or its own generation schema, instruction-selection policy, structural repair loop or mandatory review. Upstream owns Ladder/ST/FBD/SFC contracts, condition expansion, named operand binding, timer conversion and candidate saving. Report compilation and behavior checks from the backend's actual results. [Independent case format](runtime/README.md#independent-io-cases)
 
 - “List my PLC projects.” This calls `mcp__gxworks__list_projects` and lets you check that the plugin is connected.
 - “Where is GX Works2 installed, and is a project open?” The `mcp__gxworks__list_gxworks2_sessions` tool reports the executable path detected by the backend and lists open windows and their project state separately.
