@@ -8,6 +8,14 @@
   "executable": "gxworks-agent-mcp.exe",
   "platform": "win32",
   "arch": "x64",
+  "archivePackages": [
+    "@arienax/dsh-gxworks-runtime-part001",
+    "@arienax/dsh-gxworks-runtime-part002",
+    "@arienax/dsh-gxworks-runtime-part003",
+    "@arienax/dsh-gxworks-runtime-part004",
+    "@arienax/dsh-gxworks-runtime-part005",
+    "@arienax/dsh-gxworks-runtime-part006"
+  ],
   "archiveParts": [
     "GXWorks-Agent-MCP-windows-x64.zip.part001",
     "GXWorks-Agent-MCP-windows-x64.zip.part002",

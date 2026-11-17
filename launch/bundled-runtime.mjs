@@ -4,13 +4,23 @@
 import { execFileSync } from 'node:child_process'
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
+import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 export const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 export const backend = JSON.parse(readFileSync(join(packageRoot, 'runtime', 'backend.json'), 'utf8'))
 export const bundledArchive = join(packageRoot, 'runtime', backend.archive)
-export const bundledArchiveParts = (backend.archiveParts || [backend.archive]).map(name => join(packageRoot, 'runtime', name))
+const require = createRequire(import.meta.url)
+export const bundledArchiveParts = (backend.archiveParts || [backend.archive]).map((name, index) => {
+  const dependency = backend.archivePackages?.[index]
+  if (dependency) {
+    try { return require.resolve(`${dependency}/${name}`) }
+    catch (error) { if (error.code !== 'MODULE_NOT_FOUND') throw error }
+  }
+  // Source checkouts retain the release parts; npm installs resolve pinned dependencies.
+  return join(packageRoot, 'runtime', name)
+})
 
 /** Join ordered archive parts with bounded memory, preserving the original ZIP bytes. */
 export function joinArchiveParts(parts, destination) {

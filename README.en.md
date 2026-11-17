@@ -2,6 +2,11 @@
 
 # dsh-gxworks
 
+The complete backend installs automatically as six exact-version npm dependencies,
+using your configured npm registry. Mirrors must synchronize the main package and
+all six dependencies. Startup never downloads from GitHub. All knowledge is retained;
+the total download remains approximately 386 MB.
+
 This plugin brings [GXWorks Agent](https://github.com/Arienax/gxworks-agent) into DeepSeek Harness for Ladder, ST, FBD and SFC tasks. Use chat to read GXW projects, generate program candidates and edit supported program objects offline.
 
 The plugin bundles the MCP backend and registers the `gxworks-mcp-router` skill to select tools for each task. It extracts the backend locally on first use and reuses it on later launches. No separate Python installation is required. Native compilation requires a local GX Works2 installation, and simulation observation requires Simulator2.

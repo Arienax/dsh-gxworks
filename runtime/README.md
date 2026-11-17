@@ -7,9 +7,11 @@ from [GXWorks Agent](https://github.com/Arienax/gxworks-agent)'s `v0.4.2-2026111
 [backend.json](backend.json) records the exact source commit and cache directory identifier.
 
 The archive is stored as ordered `.zip.partNNN` files, each below GitHub's single-file
-limit. All parts are included in Git and npm installations; the launcher joins them
-locally before extraction. No Git LFS or separate download is needed. Keep every
-part listed in `backend.json` in the package.
+limit. Git retains all parts. npm installs them as six exact-version runtime
+dependencies listed in `backend.json`; the main plugin package contains no archive
+parts. Every dependency uses the user's npm registry, including mainland mirrors
+once they have synchronized these packages. The launcher joins the installed parts
+locally before extraction. No Git LFS, GitHub download or install script is needed.
 
 It contains the Python runtime, MCP server, authored runtime facts, engineering
 templates, simulator viewer, native helpers, and all upstream license notices.
@@ -26,8 +28,11 @@ Later launches reuse that release. Projects and MCP state use GXWorks Agent's
 normal data directories and are not stored in this cache or the plugin directory.
 
 To update, obtain the complete MCP ZIP for the selected upstream commit, update
-`backend.json`, sync the skill from the matching public source checkout, run
-`npm run check`, pack, and run `npm run check-install -- <unpacked-package>`.
+`backend.json` and the exact dependencies in `package.json`, and sync the skill
+from the matching public source checkout. Run `npm run pack-runtime -- <absolute-output-directory>`
+to prepare the six dependency packages outside the repository. Pack and publish
+all dependencies before publishing the main plugin. Run `npm run check` and
+`npm run check-install -- <installed-package>` with dependencies installed.
 
 ## Independent I/O cases
 

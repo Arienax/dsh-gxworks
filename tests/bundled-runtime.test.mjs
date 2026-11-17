@@ -19,10 +19,13 @@ test('the launcher starts through a linked Desktop installation', t => {
   assert.equal(JSON.parse(output).printPlan, true)
 })
 
-test('the npm file list ships the backend archive and its deployment module', () => {
+test('npm pins every runtime part while the source checkout retains the complete archive', () => {
   const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'))
-  assert(manifest.files.includes(`runtime/${backend.archive}`))
-  if (backend.archiveParts) assert(manifest.files.includes(`runtime/${backend.archive}.part*`))
+  assert(!manifest.files.includes(`runtime/${backend.archive}`))
+  assert(!manifest.files.includes(`runtime/${backend.archive}.part*`))
+  assert.equal(backend.archivePackages.length, backend.archiveParts.length)
+  assert.equal(new Set(backend.archivePackages).size, backend.archiveParts.length)
+  for (const name of backend.archivePackages) assert.equal(manifest.dependencies[name], backend.version)
   assert(manifest.files.includes('launch/bundled-runtime.mjs'))
   assert(manifest.files.includes('runtime/backend.json'))
   assert(bundledArchiveParts.length > 0 && bundledArchiveParts.every(part => existsSync(part)))
