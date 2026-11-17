@@ -1,6 +1,6 @@
 {
   "name": "dsh-gxworks",
-  "version": "0.4.2",
+  "version": "0.4.2-1",
   "description": "Read, generate and edit Mitsubishi PLC projects in DeepSeek Harness. Includes the GXWorks Agent MCP backend for Windows x64. GitHub project at https://github.com/Arienax/dsh-gxworks Bundled GXWorks Agent 0.4.2 is licensed under AGPL-3.0.",
   "license": "AGPL-3.0",
   "author": "Arienax",
