@@ -33,7 +33,7 @@ metadata:
 
 ## 新建 Ladder 的 Desktop 入口
 
-创建工程时按需求完备度选择 `generation_mode` 并遵循返回的 `next_actions`。宿主提供 `gxworks_generate_ladder` 时，新建 Direct 和已经确认的 Design 都用它生成整份程序；传当前 `project_id`。它通过本轮选用的 Harness 模型生成一次，自动传入当前型号的本地指令资料、读完分页，按 Web 协议提交。首次需求可以省略 `user_requirement` 由宿主从真实消息取得。多轮合并只引用相关的完整用户消息。跨品牌/跨语言代码移植转写（如西门子/CODESYS/欧姆龙转三菱）、完整步序/时序/算法规格已给定、确定性工具 FB/FUNCTION 编写或用户要求直接生成时传 `generation_mode="direct"`；存在方案取舍的开放式工艺/整机控制需求使用 `generation_mode="design"`。Desktop 的 Design 入口自动读取设计资料、展示可选方案，收到用户选择后再实施。
+创建工程时按需求完备度选择 `generation_mode` 并遵循返回的 `next_actions`。宿主提供 `gxworks_generate_ladder` 时，新建 Direct 和已经确认的 Design 都用它生成整份程序；传当前 `project_id`。它通过本轮选用的 Harness 模型生成一次，自动传入当前型号相关资料并处理交付，按 Web 协议提交。首次需求可以省略 `user_requirement` 由宿主从真实消息取得。多轮合并只引用相关的完整用户消息。跨品牌/跨语言代码移植转写（如西门子/CODESYS/欧姆龙转三菱）、完整步序/时序/算法规格已给定、确定性工具 FB/FUNCTION 编写或用户要求直接生成时传 `generation_mode="direct"`；存在方案取舍的开放式工艺/整机控制需求使用 `generation_mode="design"`。Desktop 的 Design 入口自动读取设计资料、展示可选方案，收到用户选择后再实施。
 不要为试格式创建示例版本。如果上下文返回了已有版本，按其编辑入口工作。其他宿主继续使用下表的 MCP 工具。
 
 ## 按任务选择入口
@@ -61,11 +61,13 @@ metadata:
 | 读取 Simulator2 状态与软元件 | `list_simulator_targets` → `get_simulator_status` / `read_simulator_devices` | 使用返回的 `target_ref` 读取状态和软元件值；需要建立连接时先调用 `connect_simulator`。 |
 | 信号波形采样或生成仿真方案 | `start_simulator_trace` / `prepare_simulator_scenario` | `start_simulator_trace` 对目标做只读周期采样并生成时间轴视图；`prepare_simulator_scenario` 生成类型化测试方案。 |
 | 查询异步任务或提案状态 | `get_operation_status` | 传入 `proposal_id` 或 `execution_job_id` 查询当前进度与执行回执。 |
-| 检索 CPU 指令或软元件事实 | `search_plc_manual` | 新设计按实际型号查询各相关功能的代表指令和配套调用，读完分页再选型；未选中工程时显式传入 `plc_model`。按返回的操作数、用途和条件回答问题，用 `coverage` 定位各方面资料、调用字段选择 Core 入口；字段说明见[手册检索结果的判读](references/result-handling.md#手册检索结果的判读)。 |
+| 检索 CPU 指令或软元件事实 | `search_plc_manual` | 新设计按实际型号批量查证拟用指令的缺项；未选中工程时显式传入 `plc_model`。按返回的操作数、用途和条件回答问题，用 `coverage` 定位各方面资料、调用字段选择 Core 入口；字段说明见[手册检索结果的判读](references/result-handling.md#手册检索结果的判读)。 |
 
 ## 完整读取知识与上下文
 
-`search_plc_manual`、`get_generation_context`、`get_fbd_catalog` 返回单份 JSON 正文，`data.context_schema_version=3`。先保存 `document` 和本页 `objects`；只要 `delivery.complete=false`，就原样调用 `delivery.next.tool` 与 `delivery.next.arguments`。合并同一 `document_id` 的全部 `objects` 后解析 `$ref`，再使用下文的 `generation_input`、`output_contract` 或 `results`。新生成任务把完整用户消息逐字传给 user_requirement；自己的算法和内部地址只写入实现选择。按 instruction_research 查询各功能的代表与配套调用，比对普通实现和高级指令实现，再按提交工具的 implementation_review 填写上下文、手册 document_id、选型与比较理由。对象身份只在该次读取中使用。
+资料工具默认返回 `context_schema_version=4`，直接读取 `data.document`。超限时仍返回版本 4 的可读正文分段，按 `delivery.next` 继续阅读，不需要拼装对象引用。只有显式传 `read_format="paged"` 才使用版本 3 兼容对象分页。前文已交付的资料可能标记 `$conversation_ref`，只有需要取回全文时才用 `gxworks_read_context_unit(ids=[...])` 批量恢复。
+
+多个生成任务并行时，按工具合同显式引用本次 `generation_context_id`，或用 `implementation_review.context_document` 引用本次 `delivery.document_id`。若提供 `manual_documents`，只列实际使用且已完整交付的手册文档。召回族用于选型建议，按实际采用的指令补查缺项。Design 确认后实施已选方案，记录新增的行为取舍即可。FRAG 只使用该上下文实际交付的模板。
 
 每次返回最多 6,000 个估算 token 且不超过 32 KiB UTF-8。`STALE_READ_CURSOR` 表示查询、CPU、工程版本、事实库或会话发生变化，去掉游标重读；`READ_OBJECT_TOO_LARGE` 表示完整必需对象过大，缩小明确的读取范围，不能截断源码。独立 MCP 不采用 Web 模型配置推断客户端窗口。
 
@@ -120,3 +122,8 @@ metadata:
 - 源码模块与维护说明：[来源说明](references/sources.md)。
 
 分页中的 `$ref` 指向同一读取的 `objects`。遇到 `{ "$concat": ... }` 时，解析其引用的数组并按顺序拼接；`{ "$merge": ... }` 则合并引用的对象。它们只拆分目录容器，完整事实、接口和源码仍为单个对象。知识结果的 `knowledge_status` 表示来源知识状态，不授予 Core 执行能力。
+
+Codex 的 `functions.exec` 读取资料时，每次只输出一页，设置 `max_output_tokens: 16000`，逐个 `text(block.text)` 输出 MCP 的文本内容，不输出整个 MCP 包装对象。检查实际工具输出是否出现 `truncated`：出现时用更大的输出预算重读同一页；不要直接续到下一页，也不要把服务端 `delivery.complete` 当作宿主已完整显示的证明。单页预算不是项目总资料预算。遇到 READ_BUDGET_TOO_SMALL，按返回的 host_output_tokens 提高宿主输出预算，再使用 next_actions 中原查询和 read_budget_tokens 重试；禁止缩减需求、检索范围或自行截取正文。复杂接口与多轴工程也按实际对象体积协商，不按案例或轴数裁减资料。
+
+模板、示例的适用限制只约束该具体构造，不能用于淘汰整个指令族。资料规则与现场是否满足前提分开记录；周期、容量等实现选择不得冒充用户条件。取舍依赖的未确认条件写入 `applicability_conditions` 并保留 conditional，不能借引用一条真实规则升级成 known/excluded。
+

@@ -1,4 +1,4 @@
-import { designApprovals, explicitDirect, generatorName, humanTexts, isNestedGeneratorCall,
+import { designApprovals, explicitDirect, generatorName, humanText, isNestedGeneratorCall,
   registerLadderGenerator, reviewDesign, revisedRequirements } from './launch/generate-ladder.mjs'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -12,53 +12,51 @@ const packageRoot = dirname(fileURLToPath(import.meta.url))
 const required = ['launch/mcp-launch.mjs', 'launch/bundled-runtime.mjs',
   'runtime/backend.json', 'runtime/GXWorks-Agent-MCP-windows-x64.zip', 'skills']
 
-function normalize(text) {
-  return text.trim().replace(/\s+/gu, ' ')
-}
-
-/** Options and custom answers the human gave in question windows, newest last. */
-function questionAnswerSteps(events) {
+/** Read explicit selections and custom answers from the host's question events. */
+function questionAnswers(events) {
   const asked = new Map()
-  const stepsByEvent = new Map()
+  const answersByEvent = new Map()
   for (const event of events) {
     if (event.type === 'tool/call' && event.data?.name === 'ask_user_question' && event.data.callId) {
-      let questions = []
       try {
         const parsed = typeof event.data.arguments === 'string' ? JSON.parse(event.data.arguments) : event.data.arguments
-        questions = Array.isArray(parsed?.questions) ? parsed.questions : []
+        if (Array.isArray(parsed?.questions)) asked.set(event.data.callId, parsed.questions)
       } catch { /* ignore malformed arguments */ }
-      asked.set(event.data.callId, questions)
       continue
     }
-    const message = event.type === 'tool/result' ? event.data?.message : undefined
-    if (!message || message.isError || !asked.has(message.toolCallId)) continue
-    const text = (message.content || []).filter(block => block?.type === 'text').map(block => block.text).join('')
+    const result = event.type === 'tool/result' ? event.data?.message : undefined
+    const reply = event.type === 'user/message' && event.data?.source?.kind === 'user-question-reply'
+    if (result?.isError || (result && event.data.error)) continue
+    const callId = reply ? event.data.source.callId : result?.toolCallId
+    const questions = asked.get(callId)
+    if (!questions) continue
+    const content = reply ? event.data.content : result.content
+    const text = content?.find(block => block.type === 'text')?.text
     let payload
     try { payload = JSON.parse(text) } catch { continue }
-    const questions = asked.get(message.toolCallId) || []
-    const answerSteps = []
-    for (const answer of payload?.answers || []) {
-      const prompt = questions.find(q => q && q.id === answer.id)?.question
-      for (const value of [...(answer.selected || []), ...(typeof answer.custom === 'string' ? [answer.custom] : [])]) {
-        if (typeof value === 'string' && value.trim()) {
-          const clean = value.trim()
-          const variants = [clean]
-          if (typeof prompt === 'string' && prompt.trim()) {
-            variants.push(`${prompt.trim()}：${clean}`, `${prompt.trim()}: ${clean}`)
-          }
-          answerSteps.push(variants)
-        }
+    if (!Array.isArray(payload?.answers)) continue
+    asked.delete(callId)
+    const answers = []
+    for (const answer of payload.answers) {
+      const question = questions.find(q => q && q.id === answer?.id)
+      if (!question) continue
+      const selected = Array.isArray(answer.selected) ? answer.selected : []
+      const options = Array.isArray(question.options) ? question.options : []
+      for (const option of options) {
+        if (typeof option?.label !== 'string' || !selected.includes(option.label)) continue
+        answers.push({ text: option.label, detail: option.description })
+      }
+      if (typeof answer.custom === 'string' && answer.custom.trim()) {
+        answers.push({ text: answer.custom, prompt: options.length ? undefined : question.question })
       }
     }
-    if (answerSteps.length) stepsByEvent.set(event, answerSteps)
+    answersByEvent.set(event, answers)
   }
-  return stepsByEvent
+  return answersByEvent
 }
 
 function questionChoices(session) {
-  const events = session?.snapshotEvents?.() || []
-  const byEvent = questionAnswerSteps(events)
-  return [...byEvent.values()].flat(2)
+  return [...questionAnswers(session?.snapshotEvents?.() || []).values()].flat().map(answer => answer.text)
 }
 
 // A label needs no sentence punctuation: "方案A：…（推荐，直接生成）" is a choice.
@@ -66,35 +64,21 @@ function chosenDirect(text = '') {
   return /(?:直接|立即|马上)(?:帮我)?生成|跳过(?:方案|设计)?(?:对比|比较)?确认|direct\s*(?:mode|generation)|快捷生成/iu.test(text)
 }
 
-function quotesUserMessages(request, events) {
-  const start = normalize(request)
-  if (!start) return false
-  const answerMap = questionAnswerSteps(events)
-  const steps = []
+function sessionRequirement(session) {
+  const events = session?.snapshotEvents?.() || []
+  const answers = questionAnswers(events)
+  const parts = []
   for (const event of events) {
-    if (event.type === 'user/message' && event.data?.source?.kind === 'user') {
-      const original = normalize((event.data.content || []).filter(block => block.type === 'text')
-        .map(block => block.text).join('\n'))
-      if (original) steps.push([original])
-    } else if (answerMap.has(event)) {
-      for (const variants of answerMap.get(event)) {
-        const normalized = variants.map(normalize).filter(Boolean)
-        if (normalized.length) steps.push(normalized)
-      }
+    const original = humanText(event)
+    if (original.trim()) parts.push(original)
+    for (const { text, detail, prompt } of answers.get(event) || []) {
+      if (detail) parts.push(`${text}：${detail}`)
+      else if (prompt) parts.push(`问题：${prompt}\n用户答复：${text}`)
+      else parts.push(text)
     }
   }
-  let candidates = new Set([start])
-  for (const options of steps) {
-    const next = new Set(candidates)
-    for (const remaining of candidates) {
-      for (const segment of options) {
-        if (remaining === segment) return true
-        if (remaining.startsWith(segment + ' ')) next.add(remaining.slice(segment.length + 1))
-      }
-    }
-    candidates = next
-  }
-  return false
+  parts.push(...(revisedRequirements.get(session) || []))
+  return parts.join('\n')
 }
 
 export function apply(ctx) {
@@ -105,7 +89,21 @@ export function apply(ctx) {
     return
   }
   const supportsGenerator = Boolean(ctx.get?.('llm')?.stream && ctx.get?.('tools')?.register)
-  if (supportsGenerator) registerLadderGenerator(ctx, quotesUserMessages)
+  if (supportsGenerator) registerLadderGenerator(ctx, sessionRequirement)
+  ctx.on('tools/execute', async (exec, next) => {
+    const session = exec.agent?.session
+    const args = exec.arguments
+    if (!session || !args || args.cursor || isNestedGeneratorCall(exec)) return next()
+    const design = exec.name === 'mcp__gxworks__get_design_context'
+    const generation = exec.name === 'mcp__gxworks__get_generation_context'
+      && args.workflow !== 'detailed' && (args.workflow === 'direct_generation' || Object.hasOwn(args, 'user_requirement'))
+    if (design || generation) {
+      const requirement = sessionRequirement(session)
+      // The host freezes the parsed arguments before dispatch; replace the whole object.
+      exec.arguments = Object.freeze({ ...args, user_requirement: requirement })
+    }
+    return next()
+  })
   ctx.on('tools/post-execute', async (exec, result, next) => {
     // Nested calls made inside gxworks_generate_ladder (including through batch
     // executors that omit exec.parent) must never re-enter outer review or routing.
@@ -152,21 +150,13 @@ export function apply(ctx) {
     // authoring, explicit requests). Only enforce the hard floor here — the
     // literal wording of a direct request — and let the MCP server judge the rest.
     if (tool === 'create_project' && args.generation_mode === 'direct') {
-      const requested = explicitDirect(humanTexts(exec.agent.session).at(-1)) ||
+      const latest = (exec.agent.session?.snapshotEvents?.() || []).findLast(event => humanText(event).trim())
+      const requested = explicitDirect(latest && humanText(latest)) ||
         questionChoices(exec.agent.session).some(choice => chosenDirect(choice))
       if (!requested && !args.implementation_specified) {
         return { kind: 'deny', reason: '直接模式仅用于：跨品牌移植/转写、已给出完整时序/公式/步骤的规格、确定性 FB 编写，或用户明确要求直接生成。'
           + '开放式工艺需求请省略 generation_mode 走默认 Design；用户原话说“直接生成”时无需本参数之外的确认。' }
       }
-    }
-    if (['get_design_context', 'get_generation_context'].includes(tool) && args.user_requirement &&
-        revisedRequirements.get(exec.agent.session) !== normalize(args.user_requirement) &&
-        !quotesUserMessages(args.user_requirement, exec.agent.session.snapshotEvents())) {
-      // Hand back the exact text: the model cannot guess the user's wording, and
-      // four retries in a row is worse than one long denial.
-      const verbatim = humanTexts(exec.agent.session).join('\n').slice(0, 6000)
-      return { kind: 'deny', reason: 'user_requirement 请逐字复制完整用户消息，多轮原文可按顺序换行拼接。'
-        + '模型提出的方案放入设计草稿，指令选型放入 implementation_review。\n逐字原文：\n' + verbatim }
     }
     // Mirror the backend contract exactly: only Ladder candidates and new-FBD
     // generation carry implementation_review in output_contract.required_fields

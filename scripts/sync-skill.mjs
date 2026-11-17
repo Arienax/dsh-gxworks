@@ -71,7 +71,7 @@ await writeFile(
     `- 技能版本：${version}`,
     `- 同步自提交：${commit}`,
     `- 上游路径：\`skills/${SKILL_NAME}/\``,
-    `- 许可：Apache-2.0（见本包 LICENSE）`,
+    `- 许可：AGPL-3.0（见后端归档 LICENSE 及上游 LICENSE）`,
     '',
     '上游技能变更后，在本包根目录执行 `npm run sync-skill` 重新同步并复核差异。',
     '',

@@ -33,7 +33,7 @@
 | `selection_status="none"` | 当前会话尚未选中 Agent 工程 | 只读外部文件或 GX 窗口时直接调用发现/快照工具；需要操作工程版本时先 `list_projects` → `select_project`，或调用 `create_project` / `import_gxw_project`。 |
 | `NO_PROJECT_SELECTED` / `NO_PROGRAM_SOURCE` | 当前工具需要已选中的工程或已保存的 `.gxw` 版本 | 按返回的 `next_actions` 先选中/导入含 `.gxw` 的版本；若只需分析临时快照，改用接受 `source_ref` 的读取工具。 |
 | `DESIGN_PENDING` / `DESIGN_CONFIRMED` | 工程处于未确认的 Design 流程，或已有确认规格却请求 `direct_generation` | 开放式需求按 `next_actions` 完成 Design 并由用户确认；跨品牌代码转写或完整规格任务在确认前可调用 `get_generation_context(workflow="direct_generation", user_requirement=...)` 退出 Design 直接生成；规格确认后统一传 `workflow="detailed"` 实施。 |
-| `INSTRUCTION_REVIEW_REQUIRED` / `INSTRUCTION_READ_INCOMPLETE` / `STALE_MANUAL_DOCUMENT` | 尚未读取当前工程的 `get_generation_context`、`context_document` 过期，或 `missing_families` 中的候选指令尚未读完手册分页 | 按返回的 `next_actions` 与 `details`（`expected_context_document`、`missing_candidates`）读取最新 `get_generation_context` 或调用 `search_plc_manual` 读完全部分页后，在候选工具顶层提交 `implementation_review={context_document, manual_documents, ...}`。 |
+| `INSTRUCTION_REVIEW_REQUIRED` / `INSTRUCTION_READ_INCOMPLETE` / `STALE_MANUAL_DOCUMENT` | 引用不匹配、已过期，或明确引用的文档尚未交付完毕 | 按返回的任务 ID 和 `next_actions` 更正引用或继续读取，并沿用本次程序。 |
 | 参数校验错误 | 参数字段与当前工具 schema 或读取到的对象名称不一致 | 对照 `tools/list` schema 及上一步读取到的程序名、声明表名、`record_index` 修正参数后重交。 |
 | `UNKNOWN_TOOL` 或工具未暴露 | 当前接入模式未注册该工具（如在 `service` 模式下调用 `local` 专有工具） | 查阅当前连接暴露的工具清单，改用当前模式支持的对应入口。 |
 | 原生组件启动或协议错误（如 `WORKSPACE_*`） | 本地 GX Works2 环境、辅助组件版本或桌面会话条件未满足 | 记录返回的 `error.code`、`details` 与失败阶段并如实告知用户，区分环境配置问题与 PLC 源码编译错误。 |
@@ -83,8 +83,15 @@ Core 诊断使用 `fbd_*` 标识；提交被拒绝时读取 `error.findings` 中
 
 ## 分页与适用条件
 
+资料工具默认返回 `context_schema_version=4`，直接读取 `data.document`。超限时仍返回版本 4 的可读正文分段，按 `delivery.next` 继续阅读，不需要拼装对象引用。只有显式传 `read_format="paged"` 才使用版本 3 兼容对象分页。前文已交付的资料可能标记 `$conversation_ref`，只有需要取回全文时才用 `gxworks_read_context_unit(ids=[...])` 批量恢复。
+
 正文为 `data.document` 与 `data.objects`；`$ref` 指向同一读取中已返回或后续页将返回的对象。`delivery.complete` 只说明该读取序列已交付完毕，不代表所有所问知识已成立。正文 `coverage`/`knowledge_coverage` 的目标条目中，`corpus` 为 `present`/`absent`，`knowledge` 保留 `complete`/`incomplete`/`unresolved`。`delivery=see_delivery_complete` 在读完全部页前按待交付处理，读完后为已交付；`not_available` 表示没有可交付内容。页头 `delivery.coverage` 只给数量汇总，避免重复整张目标表。源码、接口、完整事实不会切半返回；参数、类型、条件、依赖及冲突必须随事实一起判读。
 
 `facts[].depends_on` 引用同一事实包内的局部事实身份，不能只取主结论而略过被引用前提。知识状态不授予模拟器或真实设备执行能力。`generation_instructions` 仅给操作规则；事实位于 `generation_input.knowledge`，接口/源码/语言规则分别使用结构化字段。外层引用不再重复整份目录、当前程序或 schema。
 
 分页中的 `$ref` 指向同一读取的 `objects`。遇到 `{ "$concat": ... }` 时，解析其引用的数组并按顺序拼接；`{ "$merge": ... }` 则合并引用的对象。它们只拆分目录容器，完整事实、接口和源码仍为单个对象。知识结果的 `knowledge_status` 表示来源知识状态，不授予 Core 执行能力。
+
+Codex 的 `functions.exec` 读取资料时，每次只输出一页，设置 `max_output_tokens: 16000`，逐个 `text(block.text)` 输出 MCP 的文本内容，不输出整个 MCP 包装对象。检查实际工具输出是否出现 `truncated`：出现时用更大的输出预算重读同一页；不要直接续到下一页，也不要把服务端 `delivery.complete` 当作宿主已完整显示的证明。单页预算不是项目总资料预算。遇到 READ_BUDGET_TOO_SMALL，按返回的 host_output_tokens 提高宿主输出预算，再使用 next_actions 中原查询和 read_budget_tokens 重试；禁止缩减需求、检索范围或自行截取正文。复杂接口与多轴工程也按实际对象体积协商，不按案例或轴数裁减资料。
+
+模板、示例的适用限制只约束该具体构造，不能用于淘汰整个指令族。资料规则与现场是否满足前提分开记录；周期、容量等实现选择不得冒充用户条件。取舍依赖的未确认条件写入 `applicability_conditions` 并保留 conditional，不能借引用一条真实规则升级成 known/excluded。
+

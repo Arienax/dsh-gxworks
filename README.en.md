@@ -4,6 +4,12 @@ This plugin brings [GXWorks Agent](https://github.com/Arienax/gxworks-agent) int
 
 The plugin bundles the MCP backend and registers the `gxworks-mcp-router` skill to select tools for each task. It extracts the backend locally on first use and reuses it on later launches. No separate Python installation is required. Native compilation requires a local GX Works2 installation, and simulation observation requires Simulator2.
 
+## Licensing
+
+**dsh-gxworks code and documentation are AGPL-3.0-only.** The bundled GXWorks Agent 0.4.2 backend and synchronized upstream skill are AGPL-3.0, with their notices preserved. [Corresponding source](https://github.com/Arienax/gxworks-agent/tree/v0.4.2-20261117) · [License](https://www.gnu.org/licenses/agpl-3.0.html).
+
+Distribution of covered software requires access to its complete Corresponding Source under the license; covered derivative works remain under AGPL-3.0. A modified version used interactively over a network must also offer its Corresponding Source to those remote users free of charge. Independent PLC programs generated with the tool do not automatically become AGPL-licensed merely through use of the tool.
+
 ## Install
 
 Requires Windows x64, Node.js ≥ 22.12 and DeepSeek Harness 0.2.x (including prereleases). Replace `web` with your profile name.
