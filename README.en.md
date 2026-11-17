@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+
 # dsh-gxworks
 
 This plugin brings [GXWorks Agent](https://github.com/Arienax/gxworks-agent) into DeepSeek Harness for Ladder, ST, FBD and SFC tasks. Use chat to read GXW projects, generate program candidates and edit supported program objects offline.
@@ -31,5 +33,9 @@ New programs start in Design mode and use the approach you confirm. Say “direc
 - “Read this GXW file and explain the start conditions in MAIN.” Include the path to the project file.
 
 To update, run `dsh plugin --profile web update dsh-gxworks`. To uninstall, run `dsh plugin --profile web remove dsh-gxworks`.
+
+## License
+
+The original `dsh-gxworks` code and documentation are licensed under the [GNU Affero General Public License v3.0 only](LICENSE). The bundled [upstream skill](skills/gxworks-mcp-router/COPYING.md) and [GXWorks Agent MCP backend](runtime/README.md) are distributed under their respective licenses.
 
 [中文](README.md)

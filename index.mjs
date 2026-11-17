@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 import { designApprovals, explicitDirect, generatorName, humanText, isNestedGeneratorCall,
   registerLadderGenerator, reviewDesign, revisedRequirements } from './launch/generate-ladder.mjs'
 import { existsSync } from 'node:fs'

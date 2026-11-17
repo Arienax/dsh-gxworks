@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+
 # dsh-gxworks
 
 将 [GXWorks Agent](https://github.com/Arienax/gxworks-agent) 封装为 DeepSeek Harness 插件。你可以在对话中读取 GXW 工程、生成程序候选、离线修改支持的程序对象，处理梯形图（Ladder）、ST、FBD 和 SFC 任务。
@@ -31,5 +33,9 @@ dsh plugin --profile web add dsh-gxworks
 - “读取这个 GXW 文件，说明 MAIN 程序的启动条件。”—— 在对话中提供工程文件路径。
 
 更新用 `dsh plugin --profile web update dsh-gxworks`，卸载用 `dsh plugin --profile web remove dsh-gxworks`。
+
+## 许可证
+
+`dsh-gxworks` 自有代码和文档采用 [GNU Affero General Public License v3.0（仅第 3 版）](LICENSE)。随包分发的 [上游技能](skills/gxworks-mcp-router/COPYING.md) 和 [GXWorks Agent MCP 后端](runtime/README.md) 按各自的许可证分发。
 
 [English](README.en.md)

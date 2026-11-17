@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: AGPL-3.0-only
+
 /**
  * Refresh `skills/gxworks-mcp-router/` from a GXWorks Agent checkout.
  *

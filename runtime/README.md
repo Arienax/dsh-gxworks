@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+
 # Bundled GXWorks Agent backend
 
 `GXWorks-Agent-MCP-windows-x64.zip` is built with the upstream release script

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 /** Refuse to pack the launcher without the actual backend again. */
 import { statSync } from 'node:fs'
 import { backend, bundledArchive } from '../launch/bundled-runtime.mjs'

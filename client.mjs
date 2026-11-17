@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 window.__ModuleLoader__.load({
   id: 'dsh-gxworks',
   factory(require) {
