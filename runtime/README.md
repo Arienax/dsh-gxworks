@@ -3,18 +3,22 @@
 # Bundled GXWorks Agent backend
 
 `GXWorks-Agent-MCP-windows-x64.zip` is built with the upstream release script
-from [GXWorks Agent](https://github.com/Arienax/gxworks-agent)'s `fix-rag` branch.
+from [GXWorks Agent](https://github.com/Arienax/gxworks-agent)'s `v0.4.2-20261117` release.
 [backend.json](backend.json) records the exact source commit and cache directory identifier.
 
-The archive is committed as a normal Git file so Git-based Harness installs receive
-the actual backend without Git LFS or a separate download step. It is also included
-in npm tarballs. Do not replace it with a Git LFS pointer or omit it from `files`.
+The archive is stored as ordered `.zip.partNNN` files, each below GitHub's single-file
+limit. All parts are included in Git and npm installations; the launcher joins them
+locally before extraction. No Git LFS or separate download is needed. Keep every
+part listed in `backend.json` in the package.
 
 It contains the Python runtime, MCP server, authored runtime facts, engineering
 templates, simulator viewer, native helpers, and all upstream license notices.
 The archive's `LICENSE`, `NOTICE`, `LICENSE-SCOPE.md`, `THIRD_PARTY_NOTICES.md`, and
 `THIRD_PARTY_LICENSES/` remain intact. It contains no GX Works2 installation or
 Mitsubishi manuals.
+
+The FX5/GX Works3 PWM software extension remains frozen. Its dedicated contract
+files are neither bundled nor required for this GX Works2 backend.
 
 On Windows x64 the launcher extracts it to
 `%LOCALAPPDATA%\dsh-gxworks\runtime\<release>\GXWorks-Agent-MCP` on first use.

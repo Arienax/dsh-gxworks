@@ -5,14 +5,15 @@ import { designApprovals, explicitDirect, generatorName, humanText, isNestedGene
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { bundledArchiveParts } from './launch/bundled-runtime.mjs'
 
 /** 插件名，与包名一致：patch 覆盖时按它定位。 */
 export const name = 'dsh-gxworks'
-export const inject = ['tools', 'llm']
+export const inject = ['tools', 'llm', 'mcpManager']
 
 const packageRoot = dirname(fileURLToPath(import.meta.url))
 const required = ['launch/mcp-launch.mjs', 'launch/bundled-runtime.mjs',
-  'runtime/backend.json', 'runtime/GXWorks-Agent-MCP-windows-x64.zip', 'skills']
+  'runtime/backend.json', 'skills']
 
 /** Read explicit selections and custom answers from the host's question events. */
 function questionAnswers(events) {
@@ -86,10 +87,20 @@ function sessionRequirement(session) {
 export function apply(ctx) {
   const logger = ctx?.logger?.('dsh-gxworks')
   const missing = required.filter(relative => !existsSync(join(packageRoot, relative)))
+  missing.push(...bundledArchiveParts.filter(path => !existsSync(path)))
   if (missing.length > 0) {
     logger?.warn?.(`dsh-gxworks: 安装包缺少 ${missing.join('、')}，MCP 工具与技能不可用；请重新安装本包`)
     return
   }
+  // The rc.3 manager owns connection status, reconnects and plugin disposal.
+  ctx.mcpManager.register('gxworks', {
+    transport: 'stdio', command: process.execPath,
+    args: [join(packageRoot, 'launch', 'mcp-launch.mjs')],
+    // DSH scrubs its own variables from subprocesses unless explicitly passed.
+    env: process.env.DSH_HOME ? { DSH_HOME: process.env.DSH_HOME } : {},
+    startupTimeoutMs: 600000, toolCallTimeoutMs: 600000, closeTimeoutMs: 10000,
+    reconnect: { enabled: true, maxAttempts: 3 },
+  })
   const supportsGenerator = Boolean(ctx.get?.('llm')?.stream && ctx.get?.('tools')?.register)
   if (supportsGenerator) registerLadderGenerator(ctx, sessionRequirement)
   ctx.on('tools/execute', async (exec, next) => {

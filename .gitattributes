@@ -1,3 +1,4 @@
 # SPDX-License-Identifier: AGPL-3.0
 
 runtime/*.zip -text
+runtime/*.zip.part* -text

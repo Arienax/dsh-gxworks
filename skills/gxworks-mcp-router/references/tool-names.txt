@@ -1,6 +1,7 @@
 compare_native_compiled_code
 compile_project
 confirm_design_plan
+confirm_project_spec
 connect_simulator
 create_fbd_candidate
 create_program_candidate
@@ -18,6 +19,7 @@ get_generation_context
 get_native_engineering_session
 get_operation_status
 get_project_artifacts
+get_project_spec
 get_simulator_status
 get_simulator_trace
 gxworks_read_context_unit
@@ -47,5 +49,6 @@ search_plc_manual
 select_project
 start_simulator_trace
 stop_simulator_trace
+update_project_spec
 validate_current_program
 validate_project

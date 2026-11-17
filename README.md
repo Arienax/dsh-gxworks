@@ -14,7 +14,9 @@ AGPL-3.0 是强 copyleft 许可证：分发受其约束的程序或修改版时�
 
 ## 安装
 
-需要 Windows x64、Node.js ≥ 22.12 和 DeepSeek Harness 0.2.x（含预发布版）。将 `web` 换成你使用的 profile。
+需要 Windows x64、Node.js ≥ 24.9 和 DeepSeek Harness ≥ 0.2.2-rc.3、< 0.3.0。使用带有 MCP 管理服务的 Web 或 Desktop profile；下面的 `web` 换成你的 profile。
+
+GXWorks MCP 由宿主的 MCP 管理服务注册，可在宿主中查看连接状态；禁用或卸载插件会同时停止服务。首次启动需要本地解压完整后端，启动等待上限为 10 分钟。
 
 ```powershell
 dsh plugin --profile web add dsh-gxworks
@@ -26,16 +28,12 @@ dsh plugin --profile web add dsh-gxworks
 
 安装后可以在同一 profile 的对话中试试这些指令。
 
-新建程序默认先走 Design，选定方案后按规格生成。说“直接生成”即可走 Direct。新建 Ladder 时，Desktop 按 CPU 查手册，在适用的梯级复用移位或搬运片段，一次生成一份程序。开始验证时会在聊天中提示一次。片段检查无法判断外部写入的触发关系时保留候选并提示未验证，不因保护条件写法不同而拒绝。后端按已确认的行为条件或独立 I/O 用例回放，只在发现明确反例时追加一次局部修正。结果会单列尚未验证的行为。[独立用例格式](runtime/README.md#independent-io-cases)
+新建程序默认先走 Design，选定方案后按规格生成。说“直接生成”即可走 Direct。新建 Ladder 时，Desktop 按 CPU 查手册，在适用的梯级复用移位或搬运片段，一次生成一份程序。验证结果随候选程序返回。片段检查无法判断外部写入的触发关系时保留候选并提示未验证，不因保护条件写法不同而拒绝。后端按已确认的行为条件或独立 I/O 用例回放，只在发现明确反例时追加一次局部修正。结果会单列尚未验证的行为。[独立用例格式](runtime/README.md#independent-io-cases)
 
 - “列出我的 PLC 工程。”—— 调用 `mcp__gxworks__list_projects`，也可用来确认插件已连接。
 - “GX Works2 安装在哪里？有打开的工程吗？”—— `mcp__gxworks__list_gxworks2_sessions` 返回后端检测到的可执行文件路径，并单独列出窗口与工程状态。
 - “读取这个 GXW 文件，说明 MAIN 程序的启动条件。”—— 在对话中提供工程文件路径。
 
 更新用 `dsh plugin --profile web update dsh-gxworks`，卸载用 `dsh plugin --profile web remove dsh-gxworks`。
-
-## 许可证
-
-`dsh-gxworks` 自有代码和文档采用 [GNU Affero General Public License v3.0](LICENSE)。随包分发的 [上游技能](skills/gxworks-mcp-router/COPYING.md) 和 [GXWorks Agent MCP 后端](runtime/README.md) 按各自的许可证分发。
 
 [English](README.en.md)

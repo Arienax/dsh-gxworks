@@ -15,7 +15,15 @@ import {
   settingsPath,
   splitArgs,
 } from '../launch/mcp-launch.mjs'
-import { backend, bundledArchive, bundledRuntimeRoot } from '../launch/bundled-runtime.mjs'
+import { backend, bundledArchiveParts, bundledRuntimeRoot } from '../launch/bundled-runtime.mjs'
+
+test('remembered roots respect the host DSH_HOME and ignore blank overrides', () => {
+  const home = resolve('F:', 'isolated-user')
+  const dshHome = resolve('F:', 'isolated-dsh')
+  assert.equal(settingsPath({ USERPROFILE: home, DSH_HOME: ` ${dshHome} ` }), join(dshHome, 'dsh-gxworks', 'settings.json'))
+  assert.equal(settingsPath({ USERPROFILE: home, DSH_HOME: '  ' }), join(home, '.dsh', 'dsh-gxworks', 'settings.json'))
+  assert.equal(settingsPath({ USERPROFILE: home, DSH_HOME: '~/custom-dsh' }), join(home, 'custom-dsh', 'dsh-gxworks', 'settings.json'))
+})
 
 const root = resolve('C:', 'gxworks-agent')
 const python = join(root, '.venv', 'Scripts', 'python.exe')
@@ -187,7 +195,7 @@ test('the bundled backend works without Python, PATH, settings or a neighbouring
   const env = { LOCALAPPDATA: resolve('C:', 'new-user', 'AppData', 'Local') }
   const result = planLaunch({
     env, cwd: resolve('D:', 'unrelated'),
-    ...probes([bundledArchive], [], undefined),
+    ...probes(bundledArchiveParts, [], undefined),
   })
   assert.equal(result.agentRootSource, 'bundled')
   assert.equal(result.command, join(bundledRuntimeRoot(env), backend.executable))
@@ -196,7 +204,7 @@ test('the bundled backend works without Python, PATH, settings or a neighbouring
 })
 
 test('a bundled backend takes precedence over a checkout found in the working directory', () => {
-  const result = plan([], { files: [bundledArchive, join(root, ENTRY_SCRIPT), python] })
+  const result = plan([], { files: [...bundledArchiveParts, join(root, ENTRY_SCRIPT), python] })
   assert.equal(result.agentRootSource, 'bundled')
 })
 
@@ -206,14 +214,22 @@ test('explicit and remembered backend installations can override the bundle', ()
     [[], { GXWORKS_AGENT_ROOT: root }, undefined, 'env'],
     [[], {}, root, 'settings'],
   ]) {
-    const result = plan(argv, { files: [bundledArchive, join(root, FROZEN_LAUNCHER)], env, remembered })
+    const result = plan(argv, { files: [...bundledArchiveParts, join(root, FROZEN_LAUNCHER)], env, remembered })
     assert.equal(result.agentRootSource, source)
     assert.equal(result.command, join(root, FROZEN_LAUNCHER))
   }
 })
 
 test('an invalid explicit installation is reported instead of silently using the bundle', () => {
-  assert.throws(() => plan(['--agent-root', root], { files: [bundledArchive] }), LaunchPlanError)
+  assert.throws(() => plan(['--agent-root', root], { files: bundledArchiveParts }), LaunchPlanError)
+})
+
+test('the launch plan recognizes a complete split archive and rejects a missing part', () => {
+  const parts = [join(root, 'backend.zip.part001'), join(root, 'backend.zip.part002')]
+  const options = { env: {}, cwd: resolve('D:', 'unrelated'), archiveParts: parts }
+  const result = planLaunch({ ...options, ...probes(parts, []) })
+  assert.equal(result.agentRootSource, 'bundled')
+  assert.throws(() => planLaunch({ ...options, ...probes(parts.slice(0, 1), []) }), LaunchPlanError)
 })
 
 test('--set-root remembers the installation and resolves immediately', () => {

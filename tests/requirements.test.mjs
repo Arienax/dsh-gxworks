@@ -4,8 +4,61 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
-import { apply } from '../index.mjs'
+import { apply as applyPlugin } from '../index.mjs'
 import { parseJsonText, pickSubmission, readDocument, reviewDesign as reviewDesignShared } from '../launch/generate-ladder.mjs'
+
+function apply(ctx) {
+  return applyPlugin({ ...ctx, mcpManager: ctx.mcpManager || { register() {} } })
+}
+
+test('rc.3 owns the bundled MCP server through its manager', () => {
+  const registrations = []
+  const previousHome = process.env.DSH_HOME
+  process.env.DSH_HOME = 'F:\\dsh-custom-home'
+  try {
+    apply({ on() {}, mcpManager: { register(...args) { registrations.push(args) } } })
+  } finally {
+    if (previousHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousHome
+  }
+  assert.equal(registrations.length, 1)
+  const [name, config] = registrations[0]
+  assert.equal(name, 'gxworks')
+  assert.equal(config.command, process.execPath)
+  assert.deepEqual(config.env, { DSH_HOME: 'F:\\dsh-custom-home' })
+  assert.match(config.args[0], /launch[\\/]mcp-launch\.mjs$/u)
+  assert.equal(config.startupTimeoutMs, 600000)
+  assert.equal(config.toolCallTimeoutMs, 600000)
+  assert.equal(config.closeTimeoutMs, 10000)
+  assert.equal(config.reconnect.enabled, true)
+  const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+  assert(!patch.includes("name: '@deepseek-ai/dsh-mcp-client'"), 'do not launch a duplicate static MCP server')
+})
+
+for (const code of ['APPROVAL_REJECTED', 'APPROVAL_CANCELLED', 'APPROVAL_UNAVAILABLE', 'TOOL_CONTEXT_UNAVAILABLE', 'ABORTED_BEFORE_DISPATCH']) {
+  test(`rc.3 nested tool failure preserves ${code} without generating again`, async () => {
+    let calls = 0
+    const tools = {
+      register(definition) { this.generator = definition },
+      selectExecutor() {},
+      async execute() {
+        calls++
+        return { results: [{ result: { isError: true, error: { message: 'Host refused this call',
+          info: { name: 'HostError', code, reason: 'host-only detail' } }, content: [] } }] }
+      },
+    }
+    const llm = { stream() { assert.fail('a host failure must not start model generation') } }
+    apply({ on() {}, get: name => ({ tools, llm })[name] })
+    const result = await tools.generator.execute({ project_id: 'p' }, {
+      agent: { session: {} }, signal: new AbortController().signal, callId: 'outer',
+    })
+    assert.equal(calls, 1)
+    assert.equal(result.status, 'error')
+    assert.match(result.error, /Host refused this call/u)
+    assert.deepEqual(result.error_info, { name: 'HostError', code })
+    assert(!JSON.stringify(result).includes('host-only detail'))
+  })
+}
 
 test('large interfaces raise only the read budget and preserve the whole query', async () => {
   const calls = []

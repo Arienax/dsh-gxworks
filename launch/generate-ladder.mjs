@@ -688,7 +688,8 @@ export function registerLadderGenerator(ctx, sessionRequirement) {
         return await this.run(args, exec)
       } catch (error) {
         if (exec.signal?.aborted) throw error
-        return { status: 'error', project_id: args.project_id, error: String(error?.message || error) }
+        return { status: 'error', project_id: args.project_id, error: String(error?.message || error),
+          ...(error.info ? { error_info: { name: error.info.name, code: error.info.code } } : {}) }
       }
     },
     async run(args, exec) {
@@ -721,7 +722,7 @@ export function registerLadderGenerator(ctx, sessionRequirement) {
           const message = result.error.message
           let detail
           try { detail = JSON.parse(message).error } catch { /* A transport failure has no MCP envelope. */ }
-          throw Object.assign(Error(tool + '：' + message), { detail })
+          throw Object.assign(Error(tool + '：' + message), { detail, info: result.error.info })
         }
         const body = result.value.structuredContent || JSON.parse(result.value.content[0].text)
         if (!body.ok) throw Object.assign(Error(tool + '：' + JSON.stringify(body.error)), { detail: body.error })
@@ -920,6 +921,8 @@ export function registerLadderGenerator(ctx, sessionRequirement) {
         candidate = await saveWithBehaviorCheck()
       } catch (error) {
         if (exec.signal?.aborted) throw error
+        // A host approval/context failure cannot be repaired by rewriting PLC code.
+        if (error.info && !error.detail) throw error
         const state = await invoke('get_current_project', {})
         if (state.project_id !== args.project_id || state.version_count) return {
           status: 'inspect_saved_result', project_id: args.project_id, model_calls: metrics.length, metrics,
