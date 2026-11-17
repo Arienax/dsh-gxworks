@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0
 
 /** Refuse to pack the launcher without the actual backend again. */
 import { statSync } from 'node:fs'

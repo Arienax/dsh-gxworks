@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0
 
 /** Deploy the complete, bundled MCP release locally. No downloads or Python setup. */
 import { execFileSync } from 'node:child_process'

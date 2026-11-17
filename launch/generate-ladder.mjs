@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0
 
 // The local MCP owns engineering facts and validation. Desktop owns its model.
 export const generatorName = 'gxworks_generate_ladder'

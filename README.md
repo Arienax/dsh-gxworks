@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!-- SPDX-License-Identifier: AGPL-3.0 -->
 
 # dsh-gxworks
 
@@ -8,7 +8,7 @@
 
 ## 许可与开源义务
 
-**dsh-gxworks 自有代码和文档采用 AGPL-3.0-only（仅第 3 版）**；内置 GXWorks Agent 0.4.2 后端及同步的上游技能采用 AGPL-3.0，其许可与版权声明随包保留。[对应源码](https://github.com/Arienax/gxworks-agent/tree/v0.4.2-20261117) · [AGPL-3.0 全文](https://www.gnu.org/licenses/agpl-3.0.html)。
+**dsh-gxworks 自有代码和文档采用 AGPL-3.0**；内置 GXWorks Agent 0.4.2 后端及同步的上游技能采用 AGPL-3.0，其许可与版权声明随包保留。[对应源码](https://github.com/Arienax/gxworks-agent/tree/v0.4.2-20261117) · [AGPL-3.0 全文](https://www.gnu.org/licenses/agpl-3.0.html)。
 
 AGPL-3.0 是强 copyleft 许可证：分发受其约束的程序或修改版时，必须按许可提供完整对应源码，并让受许可覆盖的衍生作品继续采用 AGPL-3.0；修改后通过网络向用户提供交互服务，也必须向这些用户免费提供该版本的对应源码。不能把受其覆盖的修改或衍生部分闭源再分发，或以网络服务方式规避上述义务。仅使用工具生成的独立 PLC 程序，不会因此自动适用 AGPL-3.0。具体范围以许可证为准。
 
@@ -36,6 +36,6 @@ dsh plugin --profile web add dsh-gxworks
 
 ## 许可证
 
-`dsh-gxworks` 自有代码和文档采用 [GNU Affero General Public License v3.0（仅第 3 版）](LICENSE)。随包分发的 [上游技能](skills/gxworks-mcp-router/COPYING.md) 和 [GXWorks Agent MCP 后端](runtime/README.md) 按各自的许可证分发。
+`dsh-gxworks` 自有代码和文档采用 [GNU Affero General Public License v3.0](LICENSE)。随包分发的 [上游技能](skills/gxworks-mcp-router/COPYING.md) 和 [GXWorks Agent MCP 后端](runtime/README.md) 按各自的许可证分发。
 
 [English](README.en.md)

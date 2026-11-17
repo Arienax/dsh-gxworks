@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-License-Identifier: AGPL-3.0
 
 # ============================================================================
 # dsh-gxworks —— 把 GXWorks Agent 的 MCP 服务与路由 Skill 挂进 DeepSeek Harness

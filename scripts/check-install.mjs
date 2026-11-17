@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0
 
 /** Exercise the installed package's bundled backend with no external GXWorks Agent or Python. */
 import assert from 'node:assert/strict'
