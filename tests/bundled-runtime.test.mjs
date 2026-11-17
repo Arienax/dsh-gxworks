@@ -1,12 +1,12 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0
 
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdtempSync, mkdirSync, openSync, readFileSync, readSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
-import { backend, bundledArchive, bundledRuntimeRoot, packageRoot, prepareBundledRuntime, runtimeReady } from '../launch/bundled-runtime.mjs'
+import { backend, bundledArchiveParts, bundledRuntimeRoot, joinArchiveParts, packageRoot, prepareBundledRuntime, runtimeReady } from '../launch/bundled-runtime.mjs'
 
 test('the launcher starts through a linked Desktop installation', t => {
   const root = mkdtempSync(join(tmpdir(), 'dsh-profile-entry-'))
@@ -19,12 +19,50 @@ test('the launcher starts through a linked Desktop installation', t => {
   assert.equal(JSON.parse(output).printPlan, true)
 })
 
-test('the npm file list ships the backend archive and its deployment module', () => {
+test('npm pins every runtime part while the source checkout retains the complete archive', () => {
   const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'))
-  assert(manifest.files.includes(`runtime/${backend.archive}`))
+  assert(!manifest.files.includes(`runtime/${backend.archive}`))
+  assert(!manifest.files.includes(`runtime/${backend.archive}.part*`))
+  assert.equal(backend.archivePackages.length, backend.archiveParts.length)
+  assert.equal(new Set(backend.archivePackages).size, backend.archiveParts.length)
+  for (const name of backend.archivePackages) assert.equal(manifest.dependencies[name], backend.version)
   assert(manifest.files.includes('launch/bundled-runtime.mjs'))
   assert(manifest.files.includes('runtime/backend.json'))
-  assert(readFileSync(bundledArchive).subarray(0, 2).equals(Buffer.from('PK')), 'actual ZIP, not an LFS pointer')
+  assert(bundledArchiveParts.length > 0 && bundledArchiveParts.every(part => existsSync(part)))
+  const first = openSync(bundledArchiveParts[0], 'r')
+  try {
+    const signature = Buffer.alloc(2)
+    readSync(first, signature, 0, 2, 0)
+    assert(signature.equals(Buffer.from('PK')), 'actual ZIP, not an LFS pointer')
+  } finally {
+    closeSync(first)
+  }
+})
+
+test('archive parts preserve their byte order across copy-buffer boundaries', t => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-archive-parts-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const contents = [Buffer.alloc(4 * 1024 * 1024 + 17, 0x23), Buffer.from([0, 255, 80, 75]), Buffer.alloc(31, 0x7a)]
+  const parts = contents.map((content, index) => {
+    const path = join(root, `part${index}`)
+    writeFileSync(path, content)
+    return path
+  })
+  const destination = join(root, 'joined.zip')
+  joinArchiveParts(parts, destination)
+  assert.deepEqual(readFileSync(destination), Buffer.concat(contents))
+})
+
+test('an absent archive part is rejected before creating the runtime cache', t => {
+  const scratch = mkdtempSync(join(tmpdir(), 'dsh-missing-part-'))
+  t.after(() => rmSync(scratch, { recursive: true, force: true }))
+  const first = join(scratch, 'part001')
+  writeFileSync(first, 'PK')
+  const env = { LOCALAPPDATA: join(scratch, 'user') }
+  assert.throws(() => prepareBundledRuntime({ platform: 'win32', arch: 'x64', env,
+    archiveParts: [first, join(scratch, 'missing-part002')],
+  }), /插件安装包缺少后端/)
+  assert.equal(existsSync(env.LOCALAPPDATA), false)
 })
 
 test('the bundled runtime rejects unsupported platforms with an actionable message', () => {

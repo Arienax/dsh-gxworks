@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0
 
 /** Exercise the installed package's bundled backend with no external GXWorks Agent or Python. */
 import assert from 'node:assert/strict'
@@ -7,10 +7,11 @@ import { mkdtemp, mkdir, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { once } from 'node:events'
 
 const installed = resolve(process.argv[2] || join(dirname(fileURLToPath(import.meta.url)), '..'))
+const { readDocument } = await import(pathToFileURL(join(installed, 'launch', 'generate-ladder.mjs')).href)
 const scratch = await mkdtemp(join(tmpdir(), 'dsh-gxworks-install-'))
 const user = join(scratch, 'user')
 await mkdir(user)
@@ -19,6 +20,7 @@ const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
 Object.assign(env, {
   USERPROFILE: user, HOME: user, LOCALAPPDATA: join(user, 'AppData', 'Local'),
   APPDATA: join(user, 'AppData', 'Roaming'), PATH: dirname(process.execPath),
+  DSH_HOME: join(user, '.dsh'),
   PLC_AI_CONFIG_PATH: join(scratch, 'config.json'), PLC_AI_DATA_DIR: join(scratch, 'data'),
 })
 // Windows treats environment names case-insensitively; retain only the scrubbed PATH.
@@ -58,16 +60,17 @@ function request(method, params = {}) {
     const timer = setTimeout(() => {
       pending.delete(id)
       reject(new Error(`${method} 超时: ${diagnostics}`))
-    }, 90_000)
+    }, method === 'initialize' ? 360_000 : 90_000)
     pending.set(id, { resolve: resolveRequest, reject, timer })
     child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)
   })
 }
 async function call(name, arguments_) {
   const result = await request('tools/call', { name, arguments: arguments_ })
-  assert.notEqual(result.isError, true, JSON.stringify(result))
   const value = result.structuredContent || JSON.parse(result.content[0].text)
-  assert.notEqual(value.ok, false, JSON.stringify(value))
+  if (result.isError || value.ok === false) {
+    throw Object.assign(Error(name + ': ' + JSON.stringify(value.error || value)), { detail: value.error })
+  }
   assert.notEqual(value.status, 'error', JSON.stringify(value))
   return value
 }
@@ -94,39 +97,32 @@ try {
     assert.equal(discovery.gx_works2_executable, null)
   }
   const created = await call('create_project', { name: 'Bundled backend install check', plc_model: 'FX3U', target_mode: 'ladder' })
-  const facts = await call('search_plc_manual', { query: 'PLSY 操作数', plc_model: 'FX3U', top_k: 2 })
-  const dereference = value => value?.$ref ? facts.data.objects[value.$ref.slice('#/objects/'.length)] : value
-  assert.equal(facts.data.delivery.complete, true, 'small retrieval should fit in one delivered page')
-  const document = dereference(facts.data.document)
+  async function readContext(tool, args) {
+    const result = await readDocument(async (name, input) => {
+      const response = await call(name, input)
+      return response.data ?? response
+    }, tool, args)
+    return result.content
+  }
+  const document = await readContext('search_plc_manual', { query: 'PLSY 操作数', plc_model: 'FX3U', top_k: 2 })
   assert.equal(document.language, 'ladder')
   assert.equal(document.language_source, 'project')
   assert(tools.find(tool => tool.name === 'search_plc_manual').inputSchema.properties.language.enum.includes('sfc'))
-  const rows = dereference(document.results)
-  assert(rows?.length > 0, JSON.stringify(facts))
+  const rows = document.results
+  assert(rows?.length > 0, JSON.stringify(document))
   assert.equal(created.data.next_actions[0].tool, 'get_design_context')
-  async function readContext(tool, args) {
-    const objects = {}
-    let page
-    do {
-      page = (await call(tool, args)).data
-      Object.assign(objects, page.objects)
-      args = page.delivery.next?.arguments
-    } while (args)
-    function resolveValue(v) {
-      if (v?.$ref?.startsWith('#/objects/')) return resolveValue(objects[v.$ref.slice('#/objects/'.length)])
-      if (v?.$merge) return Object.assign({}, ...resolveValue(v.$merge))
-      if (v?.$concat) return resolveValue(v.$concat).flat()
-      if (Array.isArray(v)) return v.map(resolveValue)
-      return v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, val]) => [k, resolveValue(val)])) : v
-    }
-    return resolveValue(page.document)
-  }
   const design = await readContext('get_design_context', { user_requirement: 'X0 controls Y0' })
   assert(design.analysis_instructions.includes('Analysis mode: design'))
   const plan = await call('propose_design_plan', { analysis_id: design.analysis_id, analysis: {
     summary: 'X0 controls Y0', execution_intent_claims: [], explicit_constraint_claims: [],
-    approaches: [{ approach_id: 'direct_contact', name: 'Direct contact', implementation_semantics: [] }],
+    approaches: [{ approach_id: 'direct_contact', name: 'Direct contact', implementation_semantics: [],
+      description: 'Drive Y0 directly from X0.', decision_basis: [],
+      output_logic: [{ target: 'Y0', state: 'Follow X0 without memory.', activation: 'X0 is on.',
+        update: 'Evaluate X0 each scan.', release: 'X0 is off.',
+        interruption: 'Turn off when X0 is off.', selection: 'One input contact and one output coil.' }],
+    }],
   } })
+  assert(plan.data.draft_id, JSON.stringify(plan.data))
   const saved = await call('confirm_design_plan', { draft_id: plan.data.draft_id, approach_id: 'direct_contact' })
   assert.equal(saved.data.confirmed, true)
   const context = await readContext('get_generation_context', saved.data.next_actions[0].arguments)

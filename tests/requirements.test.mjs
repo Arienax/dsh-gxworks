@@ -1,11 +1,98 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0
 
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
-import { apply } from '../index.mjs'
-import { parseJsonText, pickSubmission, reviewDesign as reviewDesignShared } from '../launch/generate-ladder.mjs'
+import { apply as applyPlugin } from '../index.mjs'
+import { parseJsonText, pickSubmission, readDocument, reviewDesign as reviewDesignShared } from '../launch/generate-ladder.mjs'
+
+function apply(ctx) {
+  return applyPlugin({ ...ctx, mcpManager: ctx.mcpManager || { register() {} } })
+}
+
+test('rc.3 owns the bundled MCP server through its manager', () => {
+  const registrations = []
+  const previousHome = process.env.DSH_HOME
+  process.env.DSH_HOME = 'F:\\dsh-custom-home'
+  try {
+    apply({ on() {}, mcpManager: { register(...args) { registrations.push(args) } } })
+  } finally {
+    if (previousHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousHome
+  }
+  assert.equal(registrations.length, 1)
+  const [name, config] = registrations[0]
+  assert.equal(name, 'gxworks')
+  assert.equal(config.command, process.execPath)
+  assert.deepEqual(config.env, { DSH_HOME: 'F:\\dsh-custom-home' })
+  assert.match(config.args[0], /launch[\\/]mcp-launch\.mjs$/u)
+  assert.equal(config.startupTimeoutMs, 600000)
+  assert.equal(config.toolCallTimeoutMs, 600000)
+  assert.equal(config.closeTimeoutMs, 10000)
+  assert.equal(config.reconnect.enabled, true)
+  const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+  assert(!patch.includes("name: '@deepseek-ai/dsh-mcp-client'"), 'do not launch a duplicate static MCP server')
+})
+
+for (const code of ['APPROVAL_REJECTED', 'APPROVAL_CANCELLED', 'APPROVAL_UNAVAILABLE', 'TOOL_CONTEXT_UNAVAILABLE', 'ABORTED_BEFORE_DISPATCH']) {
+  test(`rc.3 nested tool failure preserves ${code} without generating again`, async () => {
+    let calls = 0
+    const tools = {
+      register(definition) { this.generator = definition },
+      selectExecutor() {},
+      async execute() {
+        calls++
+        return { results: [{ result: { isError: true, error: { message: 'Host refused this call',
+          info: { name: 'HostError', code, reason: 'host-only detail' } }, content: [] } }] }
+      },
+    }
+    const llm = { stream() { assert.fail('a host failure must not start model generation') } }
+    apply({ on() {}, get: name => ({ tools, llm })[name] })
+    const result = await tools.generator.execute({ project_id: 'p' }, {
+      agent: { session: {} }, signal: new AbortController().signal, callId: 'outer',
+    })
+    assert.equal(calls, 1)
+    assert.equal(result.status, 'error')
+    assert.match(result.error, /Host refused this call/u)
+    assert.deepEqual(result.error_info, { name: 'HostError', code })
+    assert(!JSON.stringify(result).includes('host-only detail'))
+  })
+}
+
+test('large interfaces raise only the read budget and preserve the whole query', async () => {
+  const calls = []
+  const args = { user_requirement: '多轴控制', instruction_details: true }
+  const result = await readDocument(async (tool, input) => {
+    calls.push({ tool, input })
+    if (!input.read_budget_tokens) throw Object.assign(Error('budget'), {
+      detail: { code: 'READ_BUDGET_TOO_SMALL', required_read_budget_tokens: 24000 } })
+    return { context_schema_version: 4, document: { interfaces: { axes: 24 } },
+      delivery: { document_id: 'large', page: 0, complete: true, next: null } }
+  }, 'get_generation_context', args)
+  assert.deepEqual(calls[1].input, { ...args, read_budget_tokens: 24000 })
+  assert.deepEqual(result.content, { interfaces: { axes: 24 } })
+})
+
+test('readable sections join without resolving schema references and restore facts in a batch', async () => {
+  const schema = { properties: { source: { $ref: '#/$defs/source' } } }
+  const calls = []
+  const result = await readDocument(async (tool, args) => {
+    calls.push({ tool, args })
+    if (tool === 'gxworks_read_context_unit') return { units: { a: { opcode: 'MOV' }, b: { opcode: 'BMOV' } } }
+    const index = args.cursor ? 1 : 0
+    return { context_schema_version: 4, document: index ? {
+      plc_model: 'FX3U', generation_input: { knowledge: [{ $conversation_ref: 'b', restore_tool: 'gxworks_read_context_unit' }] },
+    } : {
+      plc_model: 'FX3U', generation_input: { output_schema: schema,
+        knowledge: [{ $conversation_ref: 'a', restore_tool: 'gxworks_read_context_unit' }] },
+    }, delivery: { document_id: 'doc', page: index, complete: Boolean(index),
+      next: index ? null : { tool, arguments: { cursor: 'doc:1' } } } }
+  }, 'get_generation_context', {})
+  assert.equal(result.pages, 2)
+  assert.deepEqual(result.content.generation_input, { output_schema: schema, knowledge: [{ opcode: 'MOV' }, { opcode: 'BMOV' }] })
+  assert.deepEqual(calls.at(-1), { tool: 'gxworks_read_context_unit', args: { ids: ['a', 'b'] } })
+})
 
 function evaluate(tool, args, messages) {
   let hook
@@ -15,22 +102,38 @@ function evaluate(tool, args, messages) {
 }
 const message = (text, kind = 'user') => ({ type: 'user/message', data: { source: { kind }, content: [{ type: 'text', text }] } })
 
-test('only complete human messages in chronological order become requirements', () => {
+async function dispatch(tool, args, messages) {
+  let hook
+  apply({ on: (name, callback) => { if (name === 'tools/execute') hook = callback } })
+  const exec = { name: 'mcp__gxworks__' + tool, arguments: Object.freeze(args),
+    agent: { session: { snapshotEvents: () => messages } } }
+  return hook(exec, () => exec.arguments)
+}
+
+test('the host sends original human messages in chronological order', async () => {
   const original = 'FX3U。D0 回零后识别下一件。\r\n多件物料分别追踪。'
   const events = [message(original), message('要求用四通道定时器。', 'system'), message('停机清除任务。')]
-  const check = text => evaluate('get_generation_context', { user_requirement: text }, events)
-  assert.equal(check(original + '\n停机清除任务。'), 'allowed')
-  assert.equal(check(original + '\n要求用四通道定时器。').kind, 'deny')
-  assert.equal(check('停机清除任务。\n' + original).kind, 'deny')
-  assert.equal(check('FX3U。').kind, 'deny')
-  assert.equal(evaluate('get_generation_context', { user_requirement: '要求用四通道定时器。' },
-    [message('要求用四通道定时器。')]), 'allowed')
+  const args = { user_requirement: '模型摘要。', instruction_details: true }
+  assert.deepEqual(await dispatch('get_generation_context', args, events), {
+    user_requirement: original + '\n停机清除任务。', instruction_details: true,
+  })
+  assert.deepEqual(await dispatch('get_generation_context', { workflow: 'direct_generation' }, events), {
+    workflow: 'direct_generation', user_requirement: original + '\n停机清除任务。',
+  })
+  assert.deepEqual(await dispatch('get_generation_context', { workflow: 'detailed' }, events), { workflow: 'detailed' })
+  assert.deepEqual(await dispatch('get_design_context', { cursor: 'next' }, events), { cursor: 'next' })
 })
 
 test('new designs require a review while ordinary engineering calls pass through', () => {
-  for (const mode of ['program', 'st', 'sfc', 'fbd']) {
-    assert.equal(evaluate('create_' + mode + '_candidate', { operation: 'generate' }, []).kind, 'deny')
+  // The backend contract (generation_tools.py) only lists implementation_review
+  // in required_fields for Ladder candidates and new-FBD generation. ST and SFC
+  // stay optional there; the MCP server's check_review rejects with diagnostics.
+  for (const tool of ['create_program_candidate', 'create_fbd_candidate']) {
+    assert.equal(evaluate(tool, { operation: 'generate' }, []).kind, 'deny')
   }
+  assert.equal(evaluate('create_st_candidate', { operation: 'generate' }, []), 'allowed')
+  assert.equal(evaluate('create_sfc_candidate', { operation: 'generate' }, []), 'allowed')
+  assert.equal(evaluate('create_fbd_candidate', { operation: 'edit' }, []), 'allowed')
   assert.equal(evaluate('create_fbd_candidate', { operation: 'import' }, []), 'allowed')
   assert.equal(evaluate('get_generation_context', {}, []), 'allowed')
 })
@@ -90,10 +193,14 @@ test('new Ladder routes to one Desktop generator and preserves the selected mode
   }
 })
 
-for (const degraded of [false, true]) for (const notes of ['complete', 'misnested', 'absent'])
-test(`Direct preserves the program and reads all pages; degraded=${degraded}; notes=${notes}`, async () => {
+for (const resolved of [false, true]) for (const degraded of [false, true]) for (const notes of ['complete', 'misnested', 'absent'])
+test(`Direct preserves the program; resolved=${resolved}; degraded=${degraded}; notes=${notes}`, async () => {
   const raw = 'Copy the input buffer to the output buffer.', scope = { type: 'object', required: ['r'], properties: { r: { type: 'array' } } }
   const ladder = { r: [{ c: [], b: [{ i: [], o: ['BMOV D0 D10 K4'] }] }], device_comments: [] }
+  const decisions = { selected: 0, rationale: 'Copies the whole block.' }
+  const wrap = program => notes !== 'complete' ? program : degraded
+    ? { decisions, program, open_items: [] }
+    : { result: { decisions, program, open_items: [] } }
   const review = { selected: 'BMOV copies the whole block.', alternatives: [{ method: 'MOV', tradeoff: 'One per word.' }] }
   const facts = [1, 2, 3, 4].map(value => ({ dimension: 'test.long_fact_dimension', value,
     selection_applicability: 'applicable', ...(value === 3 ? { conditions: ['only on edge'] } : {}) }))
@@ -106,16 +213,19 @@ test(`Direct preserves the program and reads all pages; degraded=${degraded}; no
     generation_input: { request: raw, output_schema: scope }, instruction_research: { families: { copy: ['BMOV'] }, manual: { coverage: { status: 'incomplete' }, knowledge: [{ facts }] } } }
   const tools = {
     register(d) { this.generator = d },
-    get() { return { parameters: { properties: { implementation_review: { properties: {
+    get() { return { parameters: { properties: { ...(resolved ? { read_format: { enum: ['resolved', 'paged'] } } : {}), implementation_review: { properties: {
       selected: { type: 'string' }, alternatives: { type: 'array' }, limitations: { type: 'string' } } } } } } },
     async execute({ name, arguments: args }) {
       let data
       if (name.endsWith('get_current_project')) data = { project_id: 'p', target_mode: 'ladder', version_count: 0 }
       else if (name.endsWith('get_generation_context')) {
         const page = reads++
-        if (page === 0) assert.deepEqual(args, { workflow: 'direct_generation', user_requirement: raw, instruction_details: true })
+        if (page === 0) assert.deepEqual(args, { workflow: 'direct_generation', user_requirement: raw,
+          ...(resolved ? {} : { instruction_details: true }) })
         else assert.deepEqual(args, { cursor: 'next' })
-        data = { document: { $ref: '#/objects/doc' }, objects: page === 1 ? { doc } : {}, delivery: {
+        data = resolved ? { context_schema_version: 4, document: doc,
+          delivery: { page, document_id: 'manual-context', complete: true, next: null } }
+          : { document: { $ref: '#/objects/doc' }, objects: page === 1 ? { doc } : {}, delivery: {
           page, document_id: 'manual-context', complete: page === 1, next: page === 1 ? null : {
             tool: 'get_generation_context', arguments: { cursor: 'next' } } } }
       } else {
@@ -130,13 +240,18 @@ test(`Direct preserves the program and reads all pages; degraded=${degraded}; no
   }
   const llm = { async *stream(options) {
     generations++
-    assert.equal(reads, 2)
+    assert.equal(reads, resolved ? 1 : 2)
     assert.equal(options.model, 'current-model')
     assert.equal(options.provider, 'selected-provider')
     const parameters = options.tools[0].parameters.properties
     assert.deepEqual(parameters.ladder.required, ['networks'])
-    assert.deepEqual(parameters.implementation_review.properties.compared_families.properties.copy.properties.instruction.enum, ['BMOV'])
-    assert(parameters.implementation_review.required.includes('limitations'))
+    if (resolved) {
+      assert.deepEqual(options.tools[0].parameters.required, ['ladder'])
+      assert.equal(parameters.implementation_review.properties.compared_families, undefined)
+    } else {
+      assert.deepEqual(parameters.implementation_review.properties.compared_families.properties.copy.properties.instruction.enum, ['BMOV'])
+      assert(parameters.implementation_review.required.includes('limitations'))
+    }
     const packet = JSON.parse(options.messages[0].content[0].text)
     const table = packet.instruction_research.manual.knowledge[0].facts
     assert.deepEqual(table.rows.map((row, i) => ({ ...table.common,
@@ -147,6 +262,7 @@ test(`Direct preserves the program and reads all pages; degraded=${degraded}; no
         alternatives: review.alternatives.map(row => ({ ...row, note: 'Separate writes.' })), compared_families: {
           copy: { instruction: 'BMOV', tradeoff: 'Copies a contiguous range.' }, limitations: 'Check the available range.' },
         ladder: { networks: [{ shared_contacts: [], output_branches: [{ series_contacts: [], outputs: ['BMOV D0 D10 K4'] }] }], device_comments: [] } } }
+    value.implementation_review.ladder = wrap(value.implementation_review.ladder)
     if (notes !== 'complete') {
       value.ladder = value.implementation_review.ladder
       if (notes === 'misnested') value.implementation_review = { grouped_option: {
@@ -171,7 +287,7 @@ test(`Direct preserves the program and reads all pages; degraded=${degraded}; no
   assert.equal(result.status, degraded ? 'delivery_degraded' : undefined)
   if (degraded) assert.deepEqual(result.delivery, result.candidate.delivery)
   assert.deepEqual(JSON.parse(JSON.stringify(result)), result, 'Desktop result must contain no undefined values')
-  if (notes === 'complete') assert.deepEqual(saved, { ladder, generation_context_id: 'receipt', implementation_review: {
+  if (notes === 'complete') assert.deepEqual(saved, { ladder: wrap(ladder), generation_context_id: 'receipt', implementation_review: {
     selected: review.selected, alternatives: [
       { method: 'MOV', tradeoff: 'One per word. Separate writes.' }, { method: 'BMOV', tradeoff: 'Copies a contiguous range.' }],
     limitations: 'Check the available range.', manual_documents: [], context_document: 'manual-context' } })
@@ -468,25 +584,27 @@ test('the confirmation window shows the instructions the draft would use', async
 })
 
 test('a direct-mode choice made in a question window counts as human intent', () => {
-  const asked = { type: 'tool/call', data: { name: 'ask_user_question', callId: 'c1' } }
+  const directLabel = '方案A：移位寄存器追踪（推荐，直接生成）'
+  const compareLabel = '先比较 2~3 个设计方案再生成'
+  const asked = { type: 'tool/call', data: { name: 'ask_user_question', callId: 'c1',
+    arguments: JSON.stringify({ questions: [{ id: 'mode', question: '选一个方式', options: [
+      { label: directLabel }, { label: compareLabel },
+    ] }] }) } }
   const reply = { type: 'tool/result', data: { message: { toolCallId: 'c1', isError: false,
-    content: [{ type: 'text', text: JSON.stringify({ answers: [{ id: 'approach',
-      selected: ['方案A：移位寄存器追踪（推荐，直接生成）'] }] }) }] } } }
+    content: [{ type: 'text', text: JSON.stringify({ answers: [{ id: 'mode', selected: [directLabel] }] }) }] } } }
   const direct = { generation_mode: 'direct' }
   assert.equal(evaluate('create_project', direct, [message('按下面的 IO 表写程序。'), asked, reply]), 'allowed')
-  const other = { type: 'tool/call', data: { name: 'ask_user_question', callId: 'c2' } }
-  const compare = { type: 'tool/result', data: { message: { toolCallId: 'c2', isError: false,
-    content: [{ type: 'text', text: JSON.stringify({ answers: [{ id: 'mode', selected: ['先比较 2~3 个设计方案再生成'] }] }) }] } } }
-  assert.equal(evaluate('create_project', direct, [message('按下面的 IO 表写程序。'), other, compare]).kind, 'deny')
+  const compare = { type: 'tool/result', data: { message: { toolCallId: 'c1', isError: false,
+    content: [{ type: 'text', text: JSON.stringify({ answers: [{ id: 'mode', selected: [compareLabel] }] }) }] } } }
+  assert.equal(evaluate('create_project', direct, [message('按下面的 IO 表写程序。'), asked, compare]).kind, 'deny')
 })
 
-test('a rewritten requirement is denied with the verbatim text to copy', () => {
+test('the design call can omit the requirement or pass a legacy value', async () => {
   const original = 'FX3U。D0 分类，1~3 蓝，4~6 绿，7~9 灰。相邻两件之间 D0 回零一次。'
-  const decision = evaluate('get_design_context', { user_requirement: 'FX3U，D0 做颜色分类，蓝绿灰三路分拣。' },
-    [message(original)])
-  assert.equal(decision.kind, 'deny')
-  assert.match(decision.reason, /逐字原文/u)
-  assert(decision.reason.includes(original))
+  for (const args of [{}, { user_requirement: 'FX3U，D0 做颜色分类，蓝绿灰三路分拣。' }]) {
+    assert.deepEqual(await dispatch('get_design_context', args, [message(original)]), { user_requirement: original })
+  }
+  assert.deepEqual(await dispatch('get_design_context', { user_requirement: '模型代写。' }, []), { user_requirement: '' })
 })
 
 test('a generator failure reaches the model with its real message', async () => {
@@ -689,20 +807,27 @@ test('batch-host hooks do not re-intercept nested Design calls, and repairDesign
   })
 })
 
-test('question window answers count in quotesUserMessages, and revisedRequirements work in generate-ladder', async () => {
+test('only explicit question-window answers enter the requirement', async () => {
   const askCall = { type: 'tool/call', data: { name: 'ask_user_question', callId: 'q1',
-    arguments: JSON.stringify({ questions: [{ id: 'stop_mode', question: '停机处理' }] }) } }
+    arguments: JSON.stringify({ questions: [{ id: 'stop_mode', question: '停机时清零还是保持 D0？', options: [
+      { label: '清零复位', description: '清零 D0' }, { label: '保留', description: '保持 D0' },
+    ] }, { id: 'delay', question: '启动延时多久？' }] }) } }
   const askReply = { type: 'tool/result', data: { message: { toolCallId: 'q1', isError: false,
-    content: [{ type: 'text', text: JSON.stringify({ answers: [{ id: 'stop_mode', selected: ['清零复位'], custom: '同时关闭Y0' }] }) }] } } }
-  const events = [message('X0 启动电机。'), askCall, askReply]
-  assert.equal(evaluate('get_design_context',
-    { user_requirement: 'X0 启动电机。\n清零复位\n同时关闭Y0' }, events), 'allowed')
-  assert.equal(evaluate('get_design_context',
-    { user_requirement: 'X0 启动电机。\n停机处理: 清零复位' }, events), 'allowed')
-  assert.equal(evaluate('get_design_context',
-    { user_requirement: 'X0 启动电机。\n未出现过的附加要求' }, events).kind, 'deny')
+    content: [{ type: 'text', text: JSON.stringify({ answers: [
+      { id: 'stop_mode', selected: ['清零复位', '无关内容'], custom: '同时关闭Y0' },
+      { id: 'delay', selected: [], custom: '5 秒' },
+    ] }) }] } } }
+  const lateAnswer = { type: 'user/message', data: { source: { kind: 'user-question-reply', callId: 'q1' },
+    content: askReply.data.message.content } }
+  for (const reply of [askReply, lateAnswer]) {
+    const events = [message('X0 启动电机。'), askCall, reply, message('X1 急停。')]
+    assert.deepEqual(await dispatch('get_design_context', { user_requirement: '模型猜测应保持 D0。' }, events), {
+      user_requirement: 'X0 启动电机。\n清零复位：清零 D0\n同时关闭Y0\n问题：启动延时多久？\n用户答复：5 秒\nX1 急停。',
+    })
+  }
+})
 
-  // Revised requirement from reviewDesign ("✎ 修改或补充需求") is accepted by gxworks_generate_ladder.
+test('the generator merges session messages with design-window revision notes', async () => {
   const hooks = {}
   let seenReq
   const tools = {
@@ -734,18 +859,18 @@ test('question window answers count in quotesUserMessages, and revisedRequiremen
     answers: [{ id: q.id, selected: [q.options[q.options.length - 1].label], custom: '补充急停 X1 常闭切断' }],
   }) }
   apply({ on: (name, cb) => { hooks[name] = cb }, get: name => ({ tools, llm, userQuestions })[name] })
-  const session = { snapshotEvents: () => [message('X0 启动 Y0')], requestHeader: () => ({ config: { model: 'm', provider: 'p' } }) }
+  const session = { snapshotEvents: () => [message('X0 启动 Y0'), message('停机时清零 D0。')],
+    requestHeader: () => ({ config: { model: 'm', provider: 'p' } }) }
   await hooks['tools/post-execute']({ name: 'mcp__gxworks__propose_design_plan', agent: { session } }, {
     isError: false, value: { structuredContent: { ok: true, data: {
       draft_id: 'd-rev', user_requirement: 'X0 启动 Y0',
       review: { summary: '启停', approaches: [{ name: '自锁', approach_id: 'a1' }] }, issues: { errors: [] },
     } } },
   }, async () => ({ kind: 'accept' }))
-  const revised = 'X0 启动 Y0\n\n补充急停 X1 常闭切断'
-  const gen = await tools.generator.execute({ project_id: 'p', user_requirement: revised },
+  const gen = await tools.generator.execute({ project_id: 'p', user_requirement: '模型转述。' },
     { agent: { session }, signal: new AbortController().signal, callId: 'rev-gen' })
   assert.equal(gen.candidate.version_id, 'v0001')
-  assert.equal(seenReq, revised)
+  assert.equal(seenReq, 'X0 启动 Y0\n停机时清零 D0。\n补充急停 X1 常闭切断')
 })
 
 test('partial parameter answers re-prompt only remaining questions, and diacritic Latin uses neutral layout', async () => {
@@ -797,6 +922,7 @@ test('saveWithBehaviorCheck does not mutate original program if patched save fai
   const raw = 'Light Y0 on X0.'
   const goodNet = { c: ['NO X0'], b: [{ i: [], o: ['COIL Y0'] }] }
   const badPatchNet = { c: ['NO X999'], b: [{ i: [], o: ['COIL Y0'] }] }
+  const decisions = { selected: 0 }
   const submissions = []
   let callIndex = 0
   const props = { implementation_review: { properties: { selected: {}, alternatives: {}, limitations: {}, reviewed_instructions: {} } } }
@@ -809,7 +935,9 @@ test('saveWithBehaviorCheck does not mutate original program if patched save fai
         delivery: { document_id: 'doc', page: 0, complete: true },
         document: {
           project_id: 'p', plc_model: 'FX3U', generation_context_id: 'ctx1',
-          generation_input: { request: raw, output_schema: { properties: { r: { items: { type: 'object' } } } } },
+          generation_input: { request: raw, output_schema: { properties: {
+            program: { properties: { r: { items: { type: 'object' } } } },
+          } } },
           output_contract: { protocol: 'compact_ladder/1.3', tool: 'create_program_candidate' },
           instruction_research: { families: {}, manual: { coverage: { status: 'complete' }, knowledge: [] } },
         },
@@ -834,7 +962,7 @@ test('saveWithBehaviorCheck does not mutate original program if patched save fai
     seenPrompts.push({ name: tool.name, text: options.messages[0].content[0].text })
     let val
     if (tool.name === 'submit_ladder') {
-      val = { implementation_review: { selected: 'COIL' }, ladder: { r: [goodNet] } }
+      val = { implementation_review: { selected: 'COIL' }, ladder: { decisions, program: { r: [goodNet] } } }
     } else {
       val = { edits: [{ index: 0, networks: [badPatchNet] }] }
     }
@@ -846,8 +974,8 @@ test('saveWithBehaviorCheck does not mutate original program if patched save fai
   const out = await tools.generator.execute({ project_id: 'p' }, { agent: { session }, signal: new AbortController().signal })
   assert.equal(out.status, 'repair_required')
   assert.equal(submissions.length, 2)
-  assert.deepEqual(submissions[0].r, [goodNet])
-  assert.deepEqual(submissions[1].r, [badPatchNet])
+  assert.deepEqual(submissions[0], { decisions, program: { r: [goodNet] } })
+  assert.deepEqual(submissions[1], { decisions, program: { r: [badPatchNet] } })
   // recover() returns the compilable initial program rather than the broken patched network.
-  assert.deepEqual(out.draft.ladder.r, [goodNet])
+  assert.deepEqual(out.draft.ladder, submissions[0])
 })

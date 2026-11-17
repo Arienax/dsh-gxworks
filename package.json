@@ -1,8 +1,8 @@
 {
   "name": "dsh-gxworks",
-  "version": "0.3.2",
-  "description": "Read, generate and edit Mitsubishi PLC projects in DeepSeek Harness. Includes the GXWorks Agent MCP backend for Windows x64. GitHub project at https://github.com/Arienax/dsh-gxworks",
-  "license": "AGPL-3.0-only",
+  "version": "0.4.2",
+  "description": "Read, generate and edit Mitsubishi PLC projects in DeepSeek Harness. Includes the GXWorks Agent MCP backend for Windows x64. GitHub project at https://github.com/Arienax/dsh-gxworks Bundled GXWorks Agent 0.4.2 is licensed under AGPL-3.0.",
+  "license": "AGPL-3.0",
   "author": "Arienax",
   "homepage": "https://github.com/Arienax/dsh-gxworks#readme",
   "repository": {
@@ -13,8 +13,8 @@
   "type": "module",
   "main": "./index.mjs",
   "engines": {
-    "node": ">=22.12.0",
-    "dsh": ">=0.2.0-0 <0.3.0"
+    "node": ">=24.9.0",
+    "dsh": ">=0.2.2-rc.3 <0.3.0"
   },
   "exports": {
     ".": "./index.mjs",
@@ -31,7 +31,6 @@
     "launch/generate-ladder.mjs",
     "launch/bundled-runtime.mjs",
     "runtime/backend.json",
-    "runtime/GXWorks-Agent-MCP-windows-x64.zip",
     "runtime/README.md",
     "scripts/check-package.mjs",
     "skills/**/*.md",
@@ -47,9 +46,18 @@
     "test": "node --test tests/*.test.mjs",
     "check": "node --check launch/mcp-launch.mjs && node --test tests/*.test.mjs",
     "sync-skill": "node scripts/sync-skill.mjs",
+    "pack-runtime": "node scripts/pack-runtime.mjs",
     "prepack": "node scripts/check-package.mjs",
     "prepare-runtime": "node launch/bundled-runtime.mjs",
     "check-install": "node scripts/check-install.mjs"
+  },
+  "dependencies": {
+    "@arienax/dsh-gxworks-runtime-part001": "0.4.2",
+    "@arienax/dsh-gxworks-runtime-part002": "0.4.2",
+    "@arienax/dsh-gxworks-runtime-part003": "0.4.2",
+    "@arienax/dsh-gxworks-runtime-part004": "0.4.2",
+    "@arienax/dsh-gxworks-runtime-part005": "0.4.2",
+    "@arienax/dsh-gxworks-runtime-part006": "0.4.2"
   },
   "keywords": [
     "dsh",

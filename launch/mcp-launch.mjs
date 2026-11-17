@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0
 
 /**
  * dsh-gxworks — stdio launcher for the GXWorks Agent MCP server.
@@ -20,11 +20,11 @@ import { spawn } from 'node:child_process'
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
-import { backend, bundledArchive, bundledRuntimeRoot, isLaunchEntry, prepareBundledRuntime, runtimeReady } from './bundled-runtime.mjs'
+import { backend, bundledArchive, bundledArchiveParts, bundledRuntimeRoot, isLaunchEntry, prepareBundledRuntime, runtimeReady } from './bundled-runtime.mjs'
 
 /** Frozen product launcher shipped by the GXWorks Agent MCP release package. */
 export const FROZEN_LAUNCHER = 'GXWorks-Agent-MCP.exe'
-/** Source-checkout entry point used by the documented `.cmd` launcher. */
+/** Python entry point used when launching a source checkout. */
 export const ENTRY_SCRIPT = join('scripts', 'mcp_entry.py')
 /** Python interpreters inside the installation, in preference order. */
 export const PYTHON_CANDIDATES = [
@@ -62,7 +62,7 @@ function defaultIsDir(path) {
 }
 
 function defaultFindOnPath(name, env) {
-  const extensions = process.platform === 'win32' ? ['', '.exe', '.cmd', '.bat'] : ['']
+  const extensions = process.platform === 'win32' ? ['', '.exe'] : ['']
   const searchPath = env.PATH ?? env.Path ?? ''
   for (const directory of searchPath.split(delimiter)) {
     if (!directory) continue
@@ -80,7 +80,11 @@ export const ROOT_SOURCES = ['flag', 'env', 'settings', 'bundled', 'cwd', 'path'
 /** Per-user settings file, outside every workspace and outside this package. */
 export function settingsPath(env = process.env) {
   const home = env.USERPROFILE || env.HOME || homedir()
-  return join(home, '.dsh', 'dsh-gxworks', 'settings.json')
+  const configured = (env.DSH_HOME || '').trim()
+  const expanded = configured === '~' ? home
+    : /^~[\\/]/u.test(configured) ? join(home, configured.slice(2)) : configured
+  const dshHome = configured ? resolve(expanded) : join(home, '.dsh')
+  return join(dshHome, 'dsh-gxworks', 'settings.json')
 }
 
 /** Remember an installation root so later Harness boots need no discovery. */
@@ -174,6 +178,7 @@ export function planLaunch(options = {}) {
     isDir = defaultIsDir,
     findOnPath = defaultFindOnPath,
     archive = bundledArchive,
+    archiveParts = archive === bundledArchive ? bundledArchiveParts : [archive],
     bundledRoot = bundledRuntimeRoot(env),
     now = () => new Date().toISOString(),
   } = options
@@ -299,7 +304,7 @@ export function planLaunch(options = {}) {
     }
   }
 
-  if (isFile(archive)) {
+  if (archiveParts.length > 0 && archiveParts.every(isFile)) {
     return finish({ command: join(bundledRoot, backend.executable), args: [], flavor: 'frozen',
       agentRoot: bundledRoot, agentRootSource: 'bundled', prepareRequired: !runtimeReady(bundledRoot) })
   }

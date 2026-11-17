@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!-- SPDX-License-Identifier: AGPL-3.0 -->
 
 # dsh-gxworks
 
@@ -6,9 +6,19 @@
 
 插件内置 MCP 后端，并注册 `gxworks-mcp-router` 技能，为当前任务选择工具。后端首次启动时在本地解压，后续直接复用，无需另装 Python。原生编译需要本机安装 GX Works2，仿真观察需要 Simulator2。
 
+完整后端通过六个固定版本的 npm 依赖包随插件自动安装，全部使用你配置的 npm 源。使用大陆镜像时，镜像需同步主包和这六个依赖；启动时不从 GitHub 下载。分包保留全部知识，总下载量约 386 MB。
+
+## 许可与开源义务
+
+**dsh-gxworks 自有代码和文档采用 AGPL-3.0**；内置 GXWorks Agent 0.4.2 后端及同步的上游技能采用 AGPL-3.0，其许可与版权声明随包保留。[对应源码](https://github.com/Arienax/gxworks-agent/tree/v0.4.2-20261117) · [AGPL-3.0 全文](https://www.gnu.org/licenses/agpl-3.0.html)。
+
+AGPL-3.0 是强 copyleft 许可证：分发受其约束的程序或修改版时，必须按许可提供完整对应源码，并让受许可覆盖的衍生作品继续采用 AGPL-3.0；修改后通过网络向用户提供交互服务，也必须向这些用户免费提供该版本的对应源码。不能把受其覆盖的修改或衍生部分闭源再分发，或以网络服务方式规避上述义务。仅使用工具生成的独立 PLC 程序，不会因此自动适用 AGPL-3.0。具体范围以许可证为准。
+
 ## 安装
 
-需要 Windows x64、Node.js ≥ 22.12 和 DeepSeek Harness 0.2.x（含预发布版）。将 `web` 换成你使用的 profile。
+需要 Windows x64、Node.js ≥ 24.9 和 DeepSeek Harness ≥ 0.2.2-rc.3、< 0.3.0。使用带有 MCP 管理服务的 Web 或 Desktop profile；下面的 `web` 换成你的 profile。
+
+GXWorks MCP 由宿主的 MCP 管理服务注册，可在宿主中查看连接状态；禁用或卸载插件会同时停止服务。首次启动需要本地解压完整后端，启动等待上限为 10 分钟。
 
 ```powershell
 dsh plugin --profile web add dsh-gxworks
@@ -20,16 +30,12 @@ dsh plugin --profile web add dsh-gxworks
 
 安装后可以在同一 profile 的对话中试试这些指令。
 
-新建程序默认先走 Design，选定方案后按规格生成。说“直接生成”即可走 Direct。新建 Ladder 时，Desktop 按 CPU 查手册，在适用的梯级复用移位或搬运片段，一次生成一份程序。开始验证时会在聊天中提示一次。片段检查无法判断外部写入的触发关系时保留候选并提示未验证，不因保护条件写法不同而拒绝。后端按已确认的行为条件或独立 I/O 用例回放，只在发现明确反例时追加一次局部修正。结果会单列尚未验证的行为。[独立用例格式](runtime/README.md#independent-io-cases)
+新建程序默认先走 Design，选定方案后按规格生成。说“直接生成”即可走 Direct。新建 Ladder 时，Desktop 按 CPU 查手册，在适用的梯级复用移位或搬运片段，一次生成一份程序。验证结果随候选程序返回。片段检查无法判断外部写入的触发关系时保留候选并提示未验证，不因保护条件写法不同而拒绝。后端按已确认的行为条件或独立 I/O 用例回放，只在发现明确反例时追加一次局部修正。结果会单列尚未验证的行为。[独立用例格式](runtime/README.md#independent-io-cases)
 
 - “列出我的 PLC 工程。”—— 调用 `mcp__gxworks__list_projects`，也可用来确认插件已连接。
 - “GX Works2 安装在哪里？有打开的工程吗？”—— `mcp__gxworks__list_gxworks2_sessions` 返回后端检测到的可执行文件路径，并单独列出窗口与工程状态。
 - “读取这个 GXW 文件，说明 MAIN 程序的启动条件。”—— 在对话中提供工程文件路径。
 
 更新用 `dsh plugin --profile web update dsh-gxworks`，卸载用 `dsh plugin --profile web remove dsh-gxworks`。
-
-## 许可证
-
-`dsh-gxworks` 自有代码和文档采用 [GNU Affero General Public License v3.0（仅第 3 版）](LICENSE)。随包分发的 [上游技能](skills/gxworks-mcp-router/COPYING.md) 和 [GXWorks Agent MCP 后端](runtime/README.md) 按各自的许可证分发。
 
 [English](README.en.md)

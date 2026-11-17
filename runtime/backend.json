@@ -1,11 +1,27 @@
 {
-  "version": "0.4.0",
-  "release": "0.4.0-5bac9d1",
-  "sourceCommit": "5bac9d1689ef8b84225c744adfde1963676b5ee3",
+  "version": "0.4.2",
+  "release": "0.4.2-a8506a9",
+  "sourceCommit": "a8506a9c091eaebe0d15e3607f03b151fa46c0f8",
   "repository": "https://github.com/Arienax/gxworks-agent",
   "archive": "GXWorks-Agent-MCP-windows-x64.zip",
   "directory": "GXWorks-Agent-MCP",
   "executable": "gxworks-agent-mcp.exe",
   "platform": "win32",
-  "arch": "x64"
+  "arch": "x64",
+  "archivePackages": [
+    "@arienax/dsh-gxworks-runtime-part001",
+    "@arienax/dsh-gxworks-runtime-part002",
+    "@arienax/dsh-gxworks-runtime-part003",
+    "@arienax/dsh-gxworks-runtime-part004",
+    "@arienax/dsh-gxworks-runtime-part005",
+    "@arienax/dsh-gxworks-runtime-part006"
+  ],
+  "archiveParts": [
+    "GXWorks-Agent-MCP-windows-x64.zip.part001",
+    "GXWorks-Agent-MCP-windows-x64.zip.part002",
+    "GXWorks-Agent-MCP-windows-x64.zip.part003",
+    "GXWorks-Agent-MCP-windows-x64.zip.part004",
+    "GXWorks-Agent-MCP-windows-x64.zip.part005",
+    "GXWorks-Agent-MCP-windows-x64.zip.part006"
+  ]
 }

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0
 
 // The local MCP owns engineering facts and validation. Desktop owns its model.
 export const generatorName = 'gxworks_generate_ladder'
@@ -10,13 +10,16 @@ export function isNestedGeneratorCall(exec) {
     (typeof exec?.id === 'string' && nestedCallIds.has(exec.id))
 }
 
-export function humanTexts(session) {
-  return session.snapshotEvents().filter(e => e.type === 'user/message' && e.data.source?.kind === 'user')
-    .map(e => e.data.content.filter(b => b.type === 'text').map(b => b.text).join('\n')).filter(Boolean)
+export function humanText(event) {
+  if (event.type !== 'user/message' || event.data?.source?.kind !== 'user') return ''
+  return event.data.content.filter(block => block.type === 'text').map(block => block.text).join('\n')
 }
 
 export function explicitDirect(text = '') {
-  return /(?:^|[\n。！？；，,.!;]\s*)(?:请|请你|这次|本次)?\s*(?:直接(?:帮我)?生成|跳过(?:方案|设计)确认|使用\s*direct\s*模式|(?:use\s+)?direct\s+(?:mode|generation)|\/gxworks-direct)(?:[\s，。,.!！]|程序|梯形图|$)/iu.test(text)
+  // Leading punctuation boundary keeps "不要直接生成" out; the trailing side
+  // must stay open because the phrase runs straight into the next clause in
+  // natural requests ("直接生成三菱 FX3U PLC 梯形图程序").
+  return /(?:^|[\n。！？；，,.!;：:\s])(?:请|请你|这次|本次)?\s*(?:直接(?:帮我)?生成|跳过(?:方案|设计)确认|使用\s*direct\s*模式|(?:use\s+)?direct\s+(?:mode|generation)|\/gxworks-direct)/iu.test(text)
 }
 
 // Models stream tool arguments as raw text. One bare quote or newline inside an
@@ -84,12 +87,8 @@ const answerableErrors = new Set(['required_parameter_missing', 'parameter_detai
 
 /** The approach the user approved for this session, consumed by confirm_design_plan. */
 export const designApprovals = new WeakMap()
-/** A requirement the user changed through the window: the only allowed rewrite. */
+/** Additional requirement text explicitly submitted through the design window. */
 export const revisedRequirements = new WeakMap()
-
-export function normalizeRequirement(text) {
-  return String(text ?? '').trim().replace(/\s+/gu, ' ')
-}
 
 function pendingParameters(review) {
   const rows = Array.isArray(review?.parameters) ? review.parameters : []
@@ -370,7 +369,7 @@ export async function reviewDesign(ctx, exec, body) {
   const response = { approved: false, feedback: custom || '用户要求修改方案。请先听取修改意见。' }
   if (notes.length) {
     const requirement = [draft.user_requirement, ...notes].join('\n')
-    revisedRequirements.set(session, normalizeRequirement(requirement))
+    revisedRequirements.set(session, [...new Set([...(revisedRequirements.get(session) || []), ...notes])])
     response.next_actions = [{ tool: 'get_design_context', arguments: { user_requirement: requirement } }]
   }
   return { data: response }
@@ -391,14 +390,70 @@ function resolvePage(value, units, schema = false) {
     [key, resolvePage(item, units, key === 'schema' || key.endsWith('_schema'))]))
 }
 
-async function readDocument(invoke, tool, args) {
+export async function readDocument(invoke, tool, args) {
   const units = {}
-  let id, root
+  let id, root, format
+  const read = async (name, input) => {
+    try { return await invoke(name, input) } catch (error) {
+      const required = error.detail?.required_read_budget_tokens
+      if (error.detail?.code !== 'READ_BUDGET_TOO_SMALL' || !Number.isInteger(required) ||
+          required <= (input.read_budget_tokens ?? 6000) || required > 128000) throw error
+      // This reader receives full JSON directly, without a desktop tool-text
+      // cap. Keep the same query and raise only the delivery batch budget.
+      return invoke(name, { ...input, read_budget_tokens: required })
+    }
+  }
+  const mergeSections = (left, right) => {
+    const result = { ...left }
+    for (const [key, value] of Object.entries(right)) {
+      if (!(key in result)) result[key] = value
+      else if (Array.isArray(result[key]) && Array.isArray(value)) result[key] = [...result[key], ...value]
+      else if (result[key] && value && typeof result[key] === 'object' && typeof value === 'object') result[key] = mergeSections(result[key], value)
+      else if (result[key] !== value) throw Error('正文分页内容冲突。')
+    }
+    return result
+  }
   for (let index = 0; ; index++) {
-    const page = await invoke(tool, args)
+    const page = await read(tool, args)
     const d = page.delivery
     if (!d || d.page !== index || (index && d.document_id !== id)) throw Error('生成上下文分页不连续，请重新读取。')
-    if (index === 0) { id = d.document_id; root = page.document }
+    if (index === 0) { id = d.document_id; root = page.document; format = page.context_schema_version }
+    if (format !== page.context_schema_version) throw Error('正文分页格式改变。')
+    if (page.context_schema_version === 4) {
+      if (index) root = mergeSections(root, page.document)
+      if (!d.complete) {
+        if (d.next?.tool !== tool || !d.next.arguments?.cursor) throw Error('生成上下文缺少下一页。')
+        args = d.next.arguments
+        continue
+      }
+      if (d.next) throw Error('完整资料返回不一致。')
+      const references = new Map()
+      const collect = value => {
+        if (!value || typeof value !== 'object') return
+        if (value.$conversation_ref && value.restore_tool === 'gxworks_read_context_unit') {
+          const rows = references.get(value.$conversation_ref) || []
+          rows.push(value)
+          references.set(value.$conversation_ref, rows)
+        } else {
+          Object.values(value).forEach(collect)
+        }
+      }
+      collect(root)
+      const ids = [...references.keys()]
+      for (let offset = 0; offset < ids.length; offset += 32) {
+        const batch = ids.slice(offset, offset + 32)
+        const restored = await read('gxworks_read_context_unit', { ids: batch })
+        for (const key of batch) {
+          if (!restored.units?.[key]) throw Error('资料引用无法恢复。')
+          for (const row of references.get(key)) {
+            delete row.$conversation_ref
+            delete row.restore_tool
+            Object.assign(row, restored.units[key])
+          }
+        }
+      }
+      return { id, content: root, pages: index + 1 }
+    }
     Object.assign(units, page.objects)
     if (d.complete) return { id, content: resolvePage(root, units), pages: index + 1 }
     if (d.next?.tool !== tool || !d.next.arguments?.cursor) throw Error('生成上下文缺少下一页。')
@@ -485,7 +540,7 @@ function modelLadderSchema(node) {
 }
 
 function wireLadder(value) {
-  const program = value?.result?.program || value
+  const program = value?.result?.program || value?.program || value
   if (!Array.isArray(program?.networks)) return value
   const rename = (row, keys) => Object.fromEntries(Object.entries(row).map(([name, v]) => {
     const key = keys.find(k => ladderFields[k] === name)
@@ -499,10 +554,11 @@ function wireLadder(value) {
     if (Array.isArray(row.b)) row.b = row.b.map(branch => rename(branch, ['i', 'o']))
     return row
   }) }
-  return value?.result?.program ? { ...value, result: { ...value.result, program: compact } } : compact
+  if (value?.result?.program) return { ...value, result: { ...value.result, program: compact } }
+  return value?.program ? { ...value, program: compact } : compact
 }
 
-function submissionTool(tools, agent, ladderSchema, research, direct) {
+function submissionTool(tools, agent, ladderSchema, research, direct, resolvedContract) {
   const { families } = research
   const candidate = tools.get('mcp__gxworks__create_program_candidate', agent).parameters.properties
   const review = candidate.implementation_review
@@ -510,6 +566,15 @@ function submissionTool(tools, agent, ladderSchema, research, direct) {
   const grouped = compact && direct && research.group_operations?.length
   const fragments = direct && Boolean(research.executable_fragments?.length)
   const { selected, alternatives, limitations } = review.properties
+  if (resolvedContract) {
+    return { name: 'submit_ladder', description: '提交完整程序。仅在影响行为时补充实现假设或新的取舍。',
+      parameters: { type: 'object', additionalProperties: false, required: ['ladder'],
+        properties: { ladder: modelLadderSchema(ladderSchema),
+          implementation_review: { type: 'object', additionalProperties: false,
+            properties: { selected, limitations, ...(direct ? { alternatives } : {}),
+              ...(review.properties.assumptions ? { assumptions: review.properties.assumptions } : {}) } },
+          ...(candidate.io_example ? { io_example: candidate.io_example } : {}) } } }
+  }
   const groups = {}
   for (const [family, names] of Object.entries(families)) {
     for (const key of family === 'explicit' ? names : [family]) {
@@ -605,7 +670,7 @@ async function modelResponse(llm, exec, system, input, metrics, stage, submissio
   return { error: parsed.error, draft }
 }
 
-export function registerLadderGenerator(ctx, quotes) {
+export function registerLadderGenerator(ctx, sessionRequirement) {
   const tools = ctx.get('tools'), llm = ctx.get('llm')
   tools.register({
     name: generatorName,
@@ -613,7 +678,7 @@ export function registerLadderGenerator(ctx, quotes) {
     parameters: { type: 'object', required: ['project_id'], additionalProperties: false, properties: {
       project_id: { type: 'string', description: '当前已创建的工程 ID。' },
       stage: { type: 'string', enum: ['design'], description: '仅在新建工程 next_actions 指定 design 时传入，先生成可供用户选择的方案。' },
-      user_requirement: { type: 'string', description: '单条新需求或已确认 Design 省略；多轮合并只用相关的完整用户消息。' },
+      user_requirement: { type: 'string', description: '兼容参数，可省略。工具从会话原文和用户明确答复读取需求。' },
     } },
     output: { schema: { type: 'object' }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
     // A thrown error reaches the model as "Tool batch execution failed", which
@@ -623,7 +688,8 @@ export function registerLadderGenerator(ctx, quotes) {
         return await this.run(args, exec)
       } catch (error) {
         if (exec.signal?.aborted) throw error
-        return { status: 'error', project_id: args.project_id, error: String(error?.message || error) }
+        return { status: 'error', project_id: args.project_id, error: String(error?.message || error),
+          ...(error.info ? { error_info: { name: error.info.name, code: error.info.code } } : {}) }
       }
     },
     async run(args, exec) {
@@ -656,7 +722,7 @@ export function registerLadderGenerator(ctx, quotes) {
           const message = result.error.message
           let detail
           try { detail = JSON.parse(message).error } catch { /* A transport failure has no MCP envelope. */ }
-          throw Object.assign(Error(tool + '：' + message), { detail })
+          throw Object.assign(Error(tool + '：' + message), { detail, info: result.error.info })
         }
         const body = result.value.structuredContent || JSON.parse(result.value.content[0].text)
         if (!body.ok) throw Object.assign(Error(tool + '：' + JSON.stringify(body.error)), { detail: body.error })
@@ -669,12 +735,8 @@ export function registerLadderGenerator(ctx, quotes) {
       const metrics = []
       let raw
       if (!project.has_confirmed_spec) {
-        const texts = humanTexts(exec.agent.session)
-        raw = args.user_requirement || (texts.length === 1 ? texts[0] : undefined)
-        if (!raw || (revisedRequirements.get(exec.agent.session) !== normalizeRequirement(raw) &&
-            !quotes(raw, exec.agent.session.snapshotEvents()))) {
-          throw Error('请用相关的完整用户消息传入 user_requirement。')
-        }
+        raw = sessionRequirement(exec.agent.session)
+        if (!raw.trim()) throw Error('当前会话没有可用于生成的用户需求。')
       }
       // A repair request otherwise costs a full round trip through the outer
       // model, which then rewrites the draft by hand and loses the analysis.
@@ -714,6 +776,8 @@ export function registerLadderGenerator(ctx, quotes) {
         if (byPath.size !== targets.length) return
         return invoke('propose_design_plan', { analysis_id: state.analysis_id, repair_id: state.repair_id, repairs: [...byPath.values()] })
       }
+      const resolvedContract = Boolean(tools.get('mcp__gxworks__get_generation_context', exec.agent)
+        ?.parameters?.properties?.read_format?.enum?.includes('resolved'))
       if (args.stage === 'design' && !project.has_confirmed_spec) {
         const { content: design } = await readDocument(invoke, 'get_design_context', {
           user_requirement: raw })
@@ -721,7 +785,7 @@ export function registerLadderGenerator(ctx, quotes) {
         if (!design.analysis_schema?.properties?.approaches) throw Error('后端未交付 Web Design 草稿结构。')
         const submission = { name: 'submit_design_plan', parameters: design.analysis_schema,
           description: '按 Web Design 结构提交规格草稿。把工艺事实与备选实现分开，证据须逐字来自用户。' }
-        const analysis = await modelResponse(llm, exec, [design.analysis_instructions, designSelection].join('\n'), input, metrics, 'design', submission)
+        const analysis = await modelResponse(llm, exec, [design.analysis_instructions, ...(resolvedContract ? [] : [designSelection])].join('\n'), input, metrics, 'design', submission)
         if (analysis.error) return { status: 'repair_required', error: analysis.error, draft: analysis.draft,
           project_id: project.project_id, analysis_id: design.analysis_id, model_calls: metrics.length, metrics,
           next_actions: [{ tool: 'propose_design_plan', instruction: '整理返回的草稿，沿用 analysis_id 提交。' }] }
@@ -759,13 +823,13 @@ export function registerLadderGenerator(ctx, quotes) {
       const contextArgs = project.has_confirmed_spec || metrics.length ? { workflow: 'detailed' }
         : { workflow: 'direct_generation', user_requirement: raw }
       const { id, content: doc, pages } = await readDocument(invoke, 'get_generation_context',
-        { ...contextArgs, instruction_details: true })
+        { ...contextArgs, ...(resolvedContract ? {} : { instruction_details: true }) })
       if (doc.project_id !== args.project_id || doc.output_contract?.protocol !== 'compact_ladder/1.3' ||
           doc.output_contract.tool !== 'create_program_candidate' || !doc.generation_context_id) throw Error('当前后端未返回该工程的 Web 紧凑 Ladder 协议。')
       const research = doc.instruction_research
-      if (!research || (Object.keys(research.families).length && !research.manual)) throw Error('当前后端未随上下文交付相关手册。')
+      if (!research || (!resolvedContract && Object.keys(research.families).length && !research.manual)) throw Error('当前后端未随上下文交付相关手册。')
       const { output_schema, request, ...engineering } = doc.generation_input
-      const submit = submissionTool(tools, exec.agent, output_schema, research, contextArgs.workflow === 'direct_generation')
+      const submit = submissionTool(tools, exec.agent, output_schema, research, contextArgs.workflow === 'direct_generation', resolvedContract)
       const compactReview = Boolean(tools.get('mcp__gxworks__create_program_candidate', exec.agent).parameters.properties.implementation_review.properties.reviewed_instructions)
       const { executable_fragments: fragments, ...references } = research
       const input = contextText({ request, ...(fragments?.length ? { executable_fragments: fragments } : {}),
@@ -776,7 +840,7 @@ export function registerLadderGenerator(ctx, quotes) {
         contextArgs.workflow === 'detailed' ? '按已确认的方案实施。' : fragments?.length ?
           '优先复用能完成工艺的 executable_fragments。按片段示例比较输入、采样精度、状态范围和并发行为。适用时在对应梯级按 syntax 填 FRAG 和实参。按相同约束比较漏接事件、来料间距和容差。定时从规格所述事件起算。按可观察的节拍推进，计数可能跨步时按实际经过时间处理。内部容量和节拍填 assumptions，只记录模型实现选择，用户需求以原消息为准。' : directSelection,
         '工具中的 networks / shared_contacts / output_branches / series_contacts / outputs 分别承载 Web 的 r / c / b / i / o。所有网络没有标题字段。',
-        compactReview ? 'compared_families 每组只填已查助记符。selected、alternatives、decisions、open_items 简洁不重复。' :
+        resolvedContract ? '只说明会影响行为的新增假设和取舍，沿用现有资料。' : compactReview ? 'compared_families 每组只填已查助记符。selected、alternatives、decisions、open_items 简洁不重复。' :
           '在 implementation_review 为各组填写代表指令与简短取舍。',
       ].join('\n')
       const response = await modelResponse(llm, exec, system, input, metrics, 'generate', submit)
@@ -804,9 +868,10 @@ export function registerLadderGenerator(ctx, quotes) {
       async function saveWithBehaviorCheck() {
         try { return await save() } catch (error) {
           if (error.detail?.code !== 'CANDIDATE_BEHAVIOR_MISMATCH' || exec.signal?.aborted) throw error
-          const body = program.result?.program || program
+          const body = program.result?.program || program.program || program
           const failure = error.detail.behavior_result
-          const networkSchema = (output_schema.properties?.result?.properties?.program || output_schema).properties?.r?.items
+          const networkSchema = (output_schema.properties?.result?.properties?.program ||
+            output_schema.properties?.program || output_schema).properties?.r?.items
           if (!networkSchema || !Array.isArray(body.r) || !failure) throw error
           const witnesses = failure.counterexamples || []
           let indexes, networks
@@ -837,7 +902,7 @@ export function registerLadderGenerator(ctx, quotes) {
               new Set(edits.map(e => e.index)).size !== edits.length) throw error
           const byIndex = new Map(edits.map(e => [e.index, e.networks]))
           const patched = structuredClone(program)
-          const patchedBody = patched.result?.program || patched
+          const patchedBody = patched.result?.program || patched.program || patched
           patchedBody.r = patchedBody.r.flatMap((row, i) => byIndex.get(i) || [row])
           try {
             const savedPatched = await save(patched)
@@ -856,6 +921,8 @@ export function registerLadderGenerator(ctx, quotes) {
         candidate = await saveWithBehaviorCheck()
       } catch (error) {
         if (exec.signal?.aborted) throw error
+        // A host approval/context failure cannot be repaired by rewriting PLC code.
+        if (error.info && !error.detail) throw error
         const state = await invoke('get_current_project', {})
         if (state.project_id !== args.project_id || state.version_count) return {
           status: 'inspect_saved_result', project_id: args.project_id, model_calls: metrics.length, metrics,

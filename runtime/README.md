@@ -1,14 +1,17 @@
-<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!-- SPDX-License-Identifier: AGPL-3.0 -->
 
 # Bundled GXWorks Agent backend
 
 `GXWorks-Agent-MCP-windows-x64.zip` is built with the upstream release script
-from [GXWorks Agent](https://github.com/Arienax/gxworks-agent)'s `fix-rag` branch.
+from [GXWorks Agent](https://github.com/Arienax/gxworks-agent)'s `v0.4.2-20261117` release.
 [backend.json](backend.json) records the exact source commit and cache directory identifier.
 
-The archive is committed as a normal Git file so Git-based Harness installs receive
-the actual backend without Git LFS or a separate download step. It is also included
-in npm tarballs. Do not replace it with a Git LFS pointer or omit it from `files`.
+The archive is stored as ordered `.zip.partNNN` files, each below GitHub's single-file
+limit. Git retains all parts. npm installs them as six exact-version runtime
+dependencies listed in `backend.json`; the main plugin package contains no archive
+parts. Every dependency uses the user's npm registry, including mainland mirrors
+once they have synchronized these packages. The launcher joins the installed parts
+locally before extraction. No Git LFS, GitHub download or install script is needed.
 
 It contains the Python runtime, MCP server, authored runtime facts, engineering
 templates, simulator viewer, native helpers, and all upstream license notices.
@@ -16,14 +19,20 @@ The archive's `LICENSE`, `NOTICE`, `LICENSE-SCOPE.md`, `THIRD_PARTY_NOTICES.md`,
 `THIRD_PARTY_LICENSES/` remain intact. It contains no GX Works2 installation or
 Mitsubishi manuals.
 
+The FX5/GX Works3 PWM software extension remains frozen. Its dedicated contract
+files are neither bundled nor required for this GX Works2 backend.
+
 On Windows x64 the launcher extracts it to
 `%LOCALAPPDATA%\dsh-gxworks\runtime\<release>\GXWorks-Agent-MCP` on first use.
 Later launches reuse that release. Projects and MCP state use GXWorks Agent's
 normal data directories and are not stored in this cache or the plugin directory.
 
 To update, obtain the complete MCP ZIP for the selected upstream commit, update
-`backend.json`, sync the skill from the matching public source checkout, run
-`npm run check`, pack, and run `npm run check-install -- <unpacked-package>`.
+`backend.json` and the exact dependencies in `package.json`, and sync the skill
+from the matching public source checkout. Run `npm run pack-runtime -- <absolute-output-directory>`
+to prepare the six dependency packages outside the repository. Pack and publish
+all dependencies before publishing the main plugin. Run `npm run check` and
+`npm run check-install -- <installed-package>` with dependencies installed.
 
 ## Independent I/O cases
 
