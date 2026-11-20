@@ -33,27 +33,13 @@
       },
       "versions": [
         {
-          "version": "0.2.8",
-          "publishTimestamp": 1793855498,
+          "version": "0.4.2-1",
+          "publishTimestamp": 1794936527,
           "source": {
-            "type": "git",
-            "url": "https://github.com/Arienax/dsh-gxworks",
-            "commit": "3642de0790c96222c17cb4732a997e5a437a99af"
+            "type": "npm"
           },
           "engines": {
-            "dsh": ">=0.2.0-0 <0.3.0"
-          }
-        },
-        {
-          "version": "0.2.1",
-          "publishTimestamp": 1793788137,
-          "source": {
-            "type": "git",
-            "url": "https://github.com/Arienax/dsh-gxworks",
-            "commit": "1a7291f81170483f0509c37831a251c7e0c2dc84"
-          },
-          "engines": {
-            "dsh": ">=0.2.0-0 <0.3.0"
+            "dsh": ">=0.2.2-rc.3 <0.3.0"
           }
         }
       ]

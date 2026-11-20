@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0
 
 # 插件市场来源列表：每行一个 npm 包名或 https Git 仓库 URL。
-# 索引生成方式见 README.md / README.en.md。
-https://github.com/Arienax/dsh-gxworks
+# 发布 docs/index.json 前，核对 versions，只保留本次要推荐的 npm 版本。
+# DSH 优先推荐稳定版；若要推荐预发行版，不要混入旧稳定版。
+dsh-gxworks
