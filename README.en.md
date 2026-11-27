@@ -2,6 +2,8 @@
 
 # dsh-gxworks
 
+[![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/arienax/dsh-gxworks)
+
 The complete backend installs automatically as six exact-version npm dependencies,
 using your configured npm registry. Mirrors must synchronize the main package and
 all six dependencies. Startup never downloads from GitHub. All knowledge is retained;
