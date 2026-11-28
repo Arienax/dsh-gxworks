@@ -8,11 +8,11 @@
 
 插件内置 MCP 后端，并注册 `gxworks-mcp-router` 技能，为当前任务选择工具。后端首次启动时在本地解压，后续直接复用，无需另装 Python。原生编译需要本机安装 GX Works2，仿真观察需要 Simulator2。
 
-完整后端通过六个固定版本的 npm 依赖包随插件自动安装，全部使用你配置的 npm 源。使用大陆镜像时，镜像需同步主包和这六个依赖；启动时不从 GitHub 下载。分包保留全部知识，总下载量约 386 MB。
+完整后端通过六个固定版本的 npm 依赖包随插件自动安装，全部使用你配置的 npm 源。使用大陆镜像时，镜像需同步主包和这六个依赖；启动时不从 GitHub 下载。分包保留全部知识，总下载量约 389 MB。
 
 ## 许可与开源义务
 
-**dsh-gxworks 自有代码和文档采用 AGPL-3.0**；内置 GXWorks Agent 0.4.2 后端及同步的上游技能采用 AGPL-3.0，其许可与版权声明随包保留。[对应源码](https://github.com/Arienax/gxworks-agent/tree/v0.4.2-20261117) · [AGPL-3.0 全文](https://www.gnu.org/licenses/agpl-3.0.html)。
+**dsh-gxworks 自有代码和文档采用 AGPL-3.0**；内置 GXWorks Agent 0.4.4 后端及同步的上游技能采用 AGPL-3.0，其许可与版权声明随包保留。[对应源码](https://github.com/Arienax/gxworks-agent/tree/v0.4.4-20261129) · [AGPL-3.0 全文](https://www.gnu.org/licenses/agpl-3.0.html)。
 
 AGPL-3.0 是强 copyleft 许可证：分发受其约束的程序或修改版时，必须按许可提供完整对应源码，并让受许可覆盖的衍生作品继续采用 AGPL-3.0；修改后通过网络向用户提供交互服务，也必须向这些用户免费提供该版本的对应源码。不能把受其覆盖的修改或衍生部分闭源再分发，或以网络服务方式规避上述义务。仅使用工具生成的独立 PLC 程序，不会因此自动适用 AGPL-3.0。具体范围以许可证为准。
 

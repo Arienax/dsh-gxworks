@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "GXWorks Agent (MCP + Skill)",
-    "description": "Read, generate and edit Mitsubishi PLC projects in DeepSeek Harness. The Windows x64 plugin bundles the MCP backend and routing skill, and works with GX Works2 for compilation and Simulator2 for observation. GitHub project at https://github.com/Arienax/dsh-gxworks Bundled GXWorks Agent 0.4.2 is AGPL-3.0: distribution requires Corresponding Source; modified network-interactive versions must offer source to their users."
+    "description": "Read, generate and edit Mitsubishi PLC projects in DeepSeek Harness. The Windows x64 plugin bundles the MCP backend and routing skill, and works with GX Works2 for compilation and Simulator2 for observation. GitHub project at https://github.com/Arienax/dsh-gxworks Bundled GXWorks Agent 0.4.4 is AGPL-3.0: distribution requires Corresponding Source; modified network-interactive versions must offer source to their users."
   }
 }

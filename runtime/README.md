@@ -3,7 +3,7 @@
 # Bundled GXWorks Agent backend
 
 `GXWorks-Agent-MCP-windows-x64.zip` is built with the upstream release script
-from [GXWorks Agent](https://github.com/Arienax/gxworks-agent)'s `v0.4.2-20261117` release.
+from [GXWorks Agent](https://github.com/Arienax/gxworks-agent)'s `v0.4.4-20261129` release.
 [backend.json](backend.json) records the exact source commit and cache directory identifier.
 
 The archive is stored as ordered `.zip.partNNN` files, each below GitHub's single-file
